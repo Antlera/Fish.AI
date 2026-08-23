@@ -1,0 +1,38 @@
+# SQL permission list for snowflake-labs-mcp.
+#
+# IMPORTANT: this layer stops mistakes, not attackers. The real boundary is the
+# AUDIT_AGENT role's grants in Snowflake - a client config can be bypassed, RBAC
+# cannot. Have both, but do not rely on this file for security.
+
+sql_statement_permissions:
+  # allowed
+  - Select: true
+  - Describe: true
+  - Show: true
+  - Explain: true
+  - Use: true
+
+  # denied - Snowflake already blocks these for this role, but denying them here
+  # too means the error comes back locally instead of after a network round trip
+  - Insert: false
+  - Update: false
+  - Delete: false
+  - Merge: false
+  - Truncate: false
+  - Create: false
+  - Drop: false
+  - Alter: false
+  - Grant: false
+  - Revoke: false
+  - Command: false
+  - Transaction: false
+  - Unknown: false
+
+# The semantic layer is off by design: it builds a semantic model out of table
+# contents, which contradicts the "the model does not read the data" rule.
+other_services:
+  cortex_analyst: false
+  cortex_search: false
+  object_manager: true
+  query_manager: true
+  semantic_manager: false

@@ -1,0 +1,25 @@
+# Copy to %USERPROFILE%\.snowflake\connections.toml
+# (01-install-mcp.ps1 does this for you)
+#
+# TODO: fill in `account` and `private_key_file`. Everything else can stay as-is.
+# The account identifier format is <orgname>-<account_name>, with no
+# .snowflakecomputing.com suffix. Find it in Snowsight: account menu (bottom left)
+# -> Account -> View account details.
+
+[audit]
+account   = "REPLACE-ME"                 # e.g. myorg-myaccount
+user      = "SVC_AUDIT_AGENT"
+role      = "AUDIT_AGENT"
+warehouse = "WH_AUDIT"
+database  = "PROD"
+schema    = "PUBLIC"
+
+# Path to the private key produced by gen-keypair.ps1. Use forward slashes.
+private_key_file = "C:/Users/REPLACE-ME/.snowflake/keys/snowflake_audit.p8"
+
+# If you generated the key with -Encrypted, uncomment this and set the passphrase.
+# private_key_file_pwd = ""
+
+# Tags every query so you can attribute credit spend afterwards in QUERY_HISTORY.
+[audit.session_parameters]
+QUERY_TAG = "local-audit-agent"

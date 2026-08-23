@@ -1,0 +1,187 @@
+<div align="center">
+
+*Designed, Developed, Devoted — for Elena* 🐑
+
+# 🐟 Fish.AI
+
+**Ask questions about your data files. It writes and runs code to verify every number.**
+
+Runs entirely on your machine — no API keys, no cloud, your data never leaves the box.
+
+[📦 Install](#-install) · [🚀 Quick Start](#-quick-start) · [📊 Benchmarks](#-benchmarks) · [🧩 How It Works](#-how-it-works) · [❄️ Snowflake](#️-snowflake-optional) · [🔧 Troubleshooting](#-troubleshooting)
+
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D4)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)
+![Node](https://img.shields.io/badge/node-18%2B-339933)
+![Local](https://img.shields.io/badge/inference-100%25%20local-0d7d94)
+
+</div>
+
+---
+
+```
+You:      What's in demo.xlsx?
+
+Fish.AI:  [reads the file]
+          Sheet "Employees", 5 columns x 6 rows: ID, name, department, salary, hire date.
+
+You:      Any outliers in the salary column?
+
+Fish.AI:  [runs Python]
+          n=5  mean=11260  sd=1240  Q1=10500  Q3=12000
+          fences [8250, 14250] -> no outliers
+```
+
+Every number above came out of a Python process you can inspect — not out of the model.
+That is the whole design: **the model decides what to compute, Python does the computing.**
+
+---
+
+## ✨ Highlights
+
+- 📂 **Reads your local files** — Excel, CSV, JSON, text. It writes the parsing code itself, nothing to upload.
+- 🧮 **Code-verified statistics** — every number traces back to a snippet you can re-run.
+- 📋 **Audit trail** — a side panel keeps every command it ran and every output.
+- 🔒 **Asks before it acts** — no command runs without your approval.
+- 💬 **Asks you back** — when a request is ambiguous it pops a multiple-choice question.
+- ⚡ **Two commands** — `.\setup.ps1`, then `.\start.ps1`.
+
+## 📦 Install
+
+**Requirements:** Windows 10/11 · NVIDIA GPU with 4 GB+ VRAM · 12 GB+ RAM · 25 GB disk · Python 3.10+ · Node 18+
+
+```powershell
+git clone https://github.com/<you>/Fish.AI.git
+cd Fish.AI
+.\setup.ps1
+```
+
+Downloads llama.cpp, the model weights, and the agent runtime. Re-runnable — it skips
+whatever is already done.
+
+Smaller machine? `.\setup.ps1 -Model bonsai8b` (1.1 GB, much faster, noticeably less accurate).
+
+## 🚀 Quick Start
+
+```powershell
+.\start.ps1
+```
+
+Opens <http://127.0.0.1:8090>. `Ctrl+C` stops everything.
+
+Put your data files in `app\workspace\` — that is the directory the agent can read.
+
+> **First token takes 60–90 seconds.** That is prefill on a 35B model, not a hang.
+> Generation runs at ~15 tok/s once it starts.
+
+## 📊 Benchmarks
+
+**Why code-verified.** Local models get statistics *concepts* right and *arithmetic* wrong.
+Measured on the default model with a 10-question stats set:
+
+| Task | Result |
+|---|---|
+| Choose the right test for a skewed small sample | ✅ |
+| Explain what a p-value is — and isn't | ✅ |
+| Recognise Simpson's paradox | ✅ |
+| Write a correct NULL-rate SQL query | ✅ |
+| Compute mean / median / sd **in its head** | ❌ |
+| Compute the same thing **via Python** | ✅ |
+
+So Fish.AI always routes numbers through code.
+
+**Models.** Swap with `-Model` on either script. Measured on an RTX 2050 (4 GB) / 13.7 GB RAM laptop:
+
+| `-Model` | Download | Resident RAM | VRAM | Speed | Eval |
+|---|---|---|---|---|---|
+| **`a3b`** *(default)* | 9.4 GB | **2.7 GB** | **1477 MiB** | 15 tok/s | **9/10** |
+| `qwen4b` | 2.4 GB | 7.2 GB | 3587 MiB | 13 tok/s | 7/10 |
+| `bonsai27b` | 3.5 GB | 5.9 GB | 3825 MiB | 6 tok/s | 8/10 |
+| `bonsai8b` | 1.1 GB | 4.2 GB | 3804 MiB | **52 tok/s** | 6/10 |
+
+The default is a 35B mixture-of-experts. Counter-intuitively it is the **cheapest** option
+here: 8 of its 256 experts fire per token and llama.cpp mmaps the file, so only ~2.7 GB is
+ever resident. Its KV cache is tiny too — 2 KV heads and only 10 of 40 layers use full
+attention, so 64K of context costs 0.7 GB where a 4B dense model needs 5.1 GB.
+
+`bonsai8b` is genuinely fast but called a dataset containing an obvious outlier
+"outlier-free" during testing. Use it for quick chatting, not for analysis you rely on.
+
+## 🧩 How It Works
+
+```
+┌────────────┐     ┌──────────────┐     ┌────────────────┐
+│  Browser   │────▶│  server.mjs  │────▶│ opencode serve │
+│   :8090    │◀────│  static+SSE  │◀────│     :4096      │
+└────────────┘     └──────────────┘     └───────┬────────┘
+                                                │
+                                   ┌────────────┴─────────────┐
+                                   ▼                          ▼
+                          ┌────────────────┐        ┌──────────────────┐
+                          │  llama-server  │        │  bash / python   │
+                          │     :8080      │        │  on your machine │
+                          └────────────────┘        └──────────────────┘
+```
+
+The agent runtime is [OpenCode](https://github.com/sst/opencode); inference is
+[llama.cpp](https://github.com/ggml-org/llama.cpp). Fish.AI is the web layer plus the
+behaviour rules in [`app/workspace/AGENTS.md`](app/workspace/AGENTS.md), which are written
+against measured model weaknesses — always compute in Python, never skip the derivation,
+never invent a term you are unsure of.
+
+Because the agent runs `bash` directly on your machine (not in a sandbox), it can answer
+questions about files already on disk without any upload — and that is exactly why every
+command needs approval first.
+
+## ❄️ Snowflake (optional · 🚧 TODO)
+
+> **Not enabled by default, and not yet verified end-to-end.** `setup.ps1` does not touch
+> it and the default OpenCode config contains no MCP entry — installing Fish.AI gets you
+> the local-file workflow and nothing else.
+
+[`snowflake/`](snowflake/) sketches a read-only Snowflake audit setup: dedicated warehouse,
+monthly credit cap, a role with only `USAGE` and `SELECT`, key-pair auth, and a probe that
+fails if writes are *not* rejected.
+
+| Piece | Status |
+|---|---|
+| SQL guardrails, DMF examples | written, **never run against a live account** |
+| Key-pair generation | works |
+| MCP server install + OpenCode wiring | works up to the connection attempt |
+| `probe_snowflake.py` acceptance test | **never passed — needs a real account** |
+| Agent → MCP → Snowflake round trip | **untested** |
+
+Treat it as a starting point, not a finished feature. See
+[`snowflake/README.md`](snowflake/README.md).
+
+## 🔧 Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| First token takes 60–90 s | Normal. 35B prefill. |
+| Agent writes prose instead of using tools | Context overflow — tool definitions fell out of the window. Start a new session. |
+| A command "succeeded" with no output | On Windows, `python -c` with embedded newlines silently produces nothing. Use one line, or write a `.py` file. |
+| Answers come back empty | Thinking mode is on. `03-start-server.ps1` passes `--reasoning off` for models that need it. |
+
+Full list by symptom: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+## 📁 Layout
+
+```
+setup.ps1              one-shot install
+start.ps1              one-shot run
+app/                   web UI + API proxy          -> app/README.md
+  workspace/           your data files; AGENTS.md defines agent behaviour
+engine/                llama.cpp, model downloads, agent runtime
+  scripts/             numbered install/verify steps, runnable individually
+snowflake/             optional read-only Snowflake auditing  -> snowflake/README.md
+```
+
+## 🙏 Built On
+
+[OpenCode](https://github.com/sst/opencode) · [llama.cpp](https://github.com/ggml-org/llama.cpp) · [Qwen3.6](https://huggingface.co/Qwen) · [Unsloth GGUF quants](https://huggingface.co/unsloth)
+
+## License
+
+MIT

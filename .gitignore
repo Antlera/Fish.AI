@@ -1,0 +1,40 @@
+# NOTE: gitignore does not support trailing comments on a pattern line.
+# Keep every comment on its own line.
+
+# ---- Model weights: tens of GB, never commit ----
+engine/models/
+engine/models-*/
+*.gguf
+
+# ---- llama.cpp binaries and download cache ----
+engine/bin/
+engine/.tmp/
+*.dll
+*.exe
+
+# ---- Node ----
+node_modules/
+
+# ---- Private keys and secrets ----
+*.p8
+*.pem
+*.key
+.env
+.env.*
+
+# ---- The user's real connection file lives in ~/.snowflake, never in the repo.
+#      The template under snowflake/config/ IS tracked; only stray copies are ignored.
+/connections.toml
+app/**/connections.toml
+
+# ---- Working directory: the user's own data files stay local ----
+app/workspace/*
+!app/workspace/AGENTS.md
+!app/workspace/.gitkeep
+
+# ---- Scratch ----
+*.orig
+*.bak
+*.log
+__pycache__/
+*.pyc
