@@ -12,6 +12,9 @@ param(
     [ValidateSet('a3b','qwen4b','bonsai27b','bonsai8b','qwen8b')]
     [string]$Model = 'a3b',
     [switch]$SkipPreflight,
+    # Preflight installs missing prerequisites (Python, Node) by default.
+    # Pass this to have it only report them instead.
+    [switch]$NoAutoInstall,
     # Snowflake is optional. Without it you still get local file analysis,
     # which is what most people want.
     [switch]$WithSnowflake
@@ -37,11 +40,13 @@ Sync-Path
 
 if (-not $SkipPreflight) {
     Step "1/5  Preflight"
-    & (Join-Path $Scripts '00-preflight.ps1')
+    & (Join-Path $Scripts '00-preflight.ps1') -AutoInstall:(-not $NoAutoInstall)
     if ($LASTEXITCODE -ne 0) {
         Write-Host "`nPreflight failed. Fix the items above, or re-run with -SkipPreflight to ignore." -ForegroundColor Red
         exit 1
     }
+    # Anything preflight installed landed in the machine/user PATH, not in this process.
+    Sync-Path
 } else {
     Write-Host "Skipping preflight (-SkipPreflight)" -ForegroundColor DarkGray
 }

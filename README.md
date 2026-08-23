@@ -49,7 +49,7 @@ That is the whole design: **the model decides what to compute, Python does the c
 
 ## 📦 Install
 
-**Requirements:** Windows 10/11 · NVIDIA GPU with 4 GB+ VRAM · 12 GB+ RAM · 25 GB disk · Python 3.10+ · Node 18+
+**You need:** Windows 10/11 · an NVIDIA GPU with 4 GB+ VRAM and its driver · 12 GB+ RAM · 25 GB free disk
 
 ```powershell
 git clone https://github.com/<you>/Fish.AI.git
@@ -57,8 +57,15 @@ cd Fish.AI
 .\setup.ps1
 ```
 
-Downloads llama.cpp, the model weights, and the agent runtime. Re-runnable — it skips
-whatever is already done.
+That is the whole install. `setup.ps1` installs **Python and Node.js via winget if they
+are missing**, then fetches llama.cpp, the model weights and the agent runtime. It is
+re-runnable and skips whatever is already done.
+
+The one thing it will not install for you is the NVIDIA driver — that needs a reboot and
+the right variant for your card, so it stays manual.
+
+Rather install the prerequisites yourself? `.\setup.ps1 -NoAutoInstall` reports what is
+missing instead of installing it.
 
 Smaller machine? `.\setup.ps1 -Model bonsai8b` (1.1 GB, much faster, noticeably less accurate).
 
