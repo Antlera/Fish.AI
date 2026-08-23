@@ -72,8 +72,10 @@ Opens <http://127.0.0.1:8090>. `Ctrl+C` stops everything.
 
 Put your data files in `app\workspace\` — that is the directory the agent can read.
 
-> **First token takes 60–90 seconds.** That is prefill on a 35B model, not a hang.
-> Generation runs at ~15 tok/s once it starts.
+> **The very first message takes about 2 minutes.** Prefill on a cold 35B model runs at
+> ~70 tok/s while its expert weights are still being paged in — a 4.5K-token system
+> prompt alone costs ~60 s. It is not a hang. Later messages in the same session are much
+> faster, and generation runs at ~15 tok/s throughout.
 
 ## 📊 Benchmarks
 
@@ -159,7 +161,7 @@ Treat it as a starting point, not a finished feature. See
 
 | Symptom | Cause |
 |---|---|
-| First token takes 60–90 s | Normal. 35B prefill. |
+| First message takes ~2 minutes | Normal. Cold-model prefill; later messages are much faster. |
 | Agent writes prose instead of using tools | Context overflow — tool definitions fell out of the window. Start a new session. |
 | A command "succeeded" with no output | On Windows, `python -c` with embedded newlines silently produces nothing. Use one line, or write a `.py` file. |
 | Answers come back empty | Thinking mode is on. `03-start-server.ps1` passes `--reasoning off` for models that need it. |

@@ -68,10 +68,21 @@ Missing CUDA runtime DLLs. `01-install-llama.ps1` extracts two zips - the main b
 4. Laptops: confirm the power mode is not set to power-saving. CPU throttling hits
    MoE expert compute hard
 
-## First token takes 60-90 seconds
+## The first message takes about 2 minutes
 
-Expected on a 35B model - that is prefill, not a hang. Generation runs at ~15 tok/s once
-it starts. A longer `AGENTS.md` makes prefill longer.
+Expected, and worth knowing before you assume it hung. Measured on a freshly started
+35B server:
+
+```
+prompt eval : 4521 tokens in 63.5 s  (~70 tok/s)   <- the system prompt + AGENTS.md
+eval        :   75 tokens in  4.0 s  (~19 tok/s)
+```
+
+Prefill is slow while the MoE expert weights are still being paged in from disk. Later
+messages in the same session reuse those pages and are much faster. Generation itself
+runs at ~15 tok/s throughout.
+
+A longer `AGENTS.md` directly lengthens that first prefill.
 
 ---
 

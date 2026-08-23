@@ -12,6 +12,12 @@
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent   # repo root
 
+# winget/npm installs do not refresh PATH inside an already-open terminal.
+# Pull the machine+user PATH in so a freshly installed tool is visible here.
+$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path','User')
+
+
 if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
     Write-Host "Installing OpenCode..." -ForegroundColor Cyan
     & npm install -g opencode-ai

@@ -18,6 +18,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 
+# winget/npm installs do not refresh PATH inside an already-open terminal.
+# Pull the machine+user PATH in so a freshly installed tool is visible here.
+$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path','User')
+
+
 # Keep this table in sync with $PROFILES in 03-start-server.ps1.
 $CATALOG = @{
     a3b = @{
