@@ -45,6 +45,32 @@ The agent then assumes it ran and retries the same thing. `app/workspace/AGENTS.
 tells it to use one-liners or write a `.py` file; if you hit this, that rule was
 probably edited out.
 
+## An unrelated-looking error appears before a script's own output
+
+Something like:
+
+```
+Invoke-Expression: Missing '{' in configuration statement.
+Checking the Python data stack...
+```
+
+That first line is from **your PowerShell profile**, not from Fish.AI. `pwsh script.ps1`
+loads your profile before the script runs, so anything broken in there prints first and
+looks like the script failed. A conda hook is the usual culprit:
+
+```powershell
+(& "conda.exe" "shell.powershell" "hook") | Out-String | ?{$_} | Invoke-Expression
+```
+
+The script itself is usually running fine - notice its own output follows. To confirm,
+run it without your profile:
+
+```powershell
+pwsh -NoProfile engine\scripts\06-install-pydeps.ps1
+```
+
+Check which profile is responsible with `$PROFILE | Format-List *`.
+
 ## llama-server exits immediately with no error
 
 Missing CUDA runtime DLLs. `01-install-llama.ps1` extracts two zips - the main build and
