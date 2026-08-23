@@ -65,6 +65,28 @@ to get wrong:
 
 Both `LIMIT` and `TOP` work. Identifiers are upper-cased unless quoted.
 
+## SQL that is valid but silently wrong
+
+This is the failure mode to watch for: the statement parses, runs, returns rows, and the
+result is meaningless. Measured, from a real answer:
+
+```sql
+-- WRONG
+COUNT(NULL) * 1.0 / COUNT(*) AS null_ratio
+FROM t WHERE col IS NULL
+```
+
+`COUNT(NULL)` is always 0 - COUNT counts non-null values and the argument is the NULL
+literal - and `WHERE col IS NULL` leaves only NULL rows in the denominator. Every group
+returns 0, the HAVING filter removes everything, and an empty result set **looks exactly
+like "no problem found"**.
+
+- Count nulls with `COUNT_IF(col IS NULL)` or `SUM(CASE WHEN col IS NULL THEN 1 ELSE 0 END)`.
+- Before writing a ratio, state what the denominator is - in a comment.
+- Always use fully qualified table names.
+- Ask yourself before reporting: if this query returned nothing, does that mean "clean"
+  or "I wrote the condition wrong"? An empty result is never evidence on its own.
+
 ## What you can and cannot do
 
 **Can:** propose checks, draft DMF definitions, interpret DMF results, write

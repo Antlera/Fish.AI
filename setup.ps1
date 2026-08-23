@@ -39,7 +39,7 @@ function Sync-Path {
 Sync-Path
 
 if (-not $SkipPreflight) {
-    Step "1/5  Preflight"
+    Step "1/6  Preflight"
     & (Join-Path $Scripts '00-preflight.ps1') -AutoInstall:(-not $NoAutoInstall)
     if ($LASTEXITCODE -ne 0) {
         Write-Host "`nPreflight failed. Fix the items above, or re-run with -SkipPreflight to ignore." -ForegroundColor Red
@@ -51,21 +51,24 @@ if (-not $SkipPreflight) {
     Write-Host "Skipping preflight (-SkipPreflight)" -ForegroundColor DarkGray
 }
 
-Step "2/5  llama.cpp (CUDA build)"
+Step "2/6  llama.cpp (CUDA build)"
 if (Test-Path (Join-Path $Root 'engine\bin\llama-server.exe')) {
     Write-Host "already installed, skipping" -ForegroundColor DarkGray
 } else {
     & (Join-Path $Scripts '01-install-llama.ps1')
 }
 
-Step "3/5  Model weights ($Model)"
+Step "3/6  Model weights ($Model)"
 & (Join-Path $Scripts '02-download-model.ps1') -Model $Model
 
-Step "4/5  Agent runtime (OpenCode + uv)"
+Step "4/6  Agent runtime (OpenCode)"
 & (Join-Path $Scripts '04-install-agent.ps1')
 Sync-Path
 
-Step "5/5  Web UI dependencies"
+Step "5/6  Python data stack"
+& (Join-Path $Scripts '06-install-pydeps.ps1')
+
+Step "6/6  Web UI dependencies"
 Push-Location (Join-Path $Root 'app')
 try {
     if (Test-Path 'package.json') { & npm install --no-audit --no-fund | Out-Null }

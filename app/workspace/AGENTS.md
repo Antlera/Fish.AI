@@ -5,16 +5,40 @@ weaknesses; the rules below are written against those measurements, not as boile
 
 ---
 
-## 1. Every number must come out of Python
+## 1. Every number must come from code you ran
 
 **Do not do arithmetic in your head.** Measured: asked directly for the mean of nine
 integers you answered 15.11 when the answer is 15.00, and 12.32 for a sample standard
 deviation whose true value is 11.906. Given the same numbers, code you wrote yourself
 was correct.
 
-So: anything involving addition, division, square roots, sums, sorting, quantiles, or
-any statistic goes through the bash tool running Python. Never report a number you
-worked out mentally.
+The rule is about provenance, not about a particular language: **every number you report
+must be the verbatim output of code you executed in this session, and the user must be
+able to re-run that code and get the same value.** Quote the output as-is - do not tidy
+or round it afterwards, that is mental arithmetic again.
+
+### What is actually available here
+
+Python is the tool on this machine. There is **no R, SAS, Julia or Stata installed**, so
+do not propose running code in them - you would only find that out a minute later.
+
+Installed and safe to rely on:
+
+| | |
+|---|---|
+| `numpy` `pandas` `scipy` `statsmodels` | arrays, dataframes, tests, models |
+| `openpyxl` `xlrd` `pyarrow` | .xlsx, legacy .xls, parquet |
+| `matplotlib` `tabulate` | charts, `df.to_markdown()` renders well in this UI |
+| `sqlite3` | local SQL, standard library |
+| `pyreadstat` `pyreadr` | SAS `.sas7bdat`, SPSS `.sav`, Stata `.dta`, R `.rds` |
+
+That last row matters: reading another ecosystem's **data files** does not require that
+ecosystem to be installed. Running its **code** is out of scope - say so plainly if a
+task genuinely needs it.
+
+If you need something not listed, check first with
+`python -c "import importlib; print(importlib.util.find_spec('name'))"` and install it
+with `pip` only if the user agrees. Never assume a library is present.
 
 ### Windows gotcha: `python -c` cannot contain newlines
 
@@ -41,11 +65,9 @@ python -c "import statistics as st; xs=[4,8,15,16,23,42]; print('n=',len(xs)); p
 
 ```bash
 cat > calc.py << 'EOF'
-import statistics as st
-xs = [4, 8, 15, 16, 23, 42]
-print('n      =', len(xs))
-print('mean   =', st.mean(xs))
-print('sd     =', st.stdev(xs))   # sample sd, denominator n-1
+import pandas as pd
+df = pd.read_excel('data.xlsx')
+print(df.describe().to_markdown())
 EOF
 python calc.py
 ```
@@ -58,10 +80,6 @@ Other points:
 - **Always `print()`.** A bare expression on the last line outputs nothing in script mode.
 - **Sample** standard deviation is `statistics.stdev` or `numpy.std(x, ddof=1)`.
   `ddof=0` is the *population* value. This is the most common mistake.
-- Check that scipy/pandas are importable before relying on them. If they are missing,
-  say so - do not pretend you computed something.
-- Quote Python's output directly. Do not "simplify" it afterwards; that is mental
-  arithmetic again.
 
 ## 2. Do not skip the derivation
 
@@ -83,35 +101,13 @@ correlate, you correctly produced reverse causation and common-cause explanation
   certain** and describe the mechanism instead. Inventing a professional-sounding term
   is the worst outcome - the user cannot tell it is wrong.
 
-## 4. SQL that is valid but silently wrong
-
-Measured, from a real answer:
-
-```sql
--- WRONG
-COUNT(NULL) * 1.0 / COUNT(*) AS null_ratio
-FROM t WHERE col IS NULL
-```
-
-`COUNT(NULL)` is always 0 (COUNT counts non-null values, and the argument is the NULL
-literal), and `WHERE col IS NULL` leaves only NULL rows in the denominator. Every group
-returns 0, the filter removes everything, and an empty result **looks like "no problem
-found"**.
-
-- Count nulls with `COUNT_IF(col IS NULL)` or `SUM(CASE WHEN col IS NULL THEN 1 ELSE 0 END)`.
-  **Never `COUNT(NULL)`.**
-- Before writing a ratio, state what the denominator is - in a comment.
-- Use fully qualified table names.
-- Ask yourself: if this query returns nothing, does that mean "clean" or "I wrote the
-  condition wrong"?
-
-## 5. Conclusions must be reproducible
+## 4. Conclusions must be reproducible
 
 Every numeric claim traces back to code or SQL the user can re-run. If you cannot produce
 that, do not state the claim. Say "I am not sure" rather than padding with "appears to be"
 or "may exist".
 
-## 6. One thing at a time
+## 5. One thing at a time
 
 The context window is finite and tool definitions plus history consume it quickly. Once it
 overflows, **the tool definitions are evicted and you start writing prose without
