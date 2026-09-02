@@ -3,7 +3,34 @@
 Look up the symptom first. If something fails three times, stop and report the exact
 error rather than trying variations.
 
+**Where the logs are.** `start.ps1` writes `logs\llama-server.log`, `logs\opencode.log`
+and `logs\web.log` (plus `.err` twins) in the repo root. The page's status banner has a
+*看日志* button that shows the same tails, so you rarely need to open them by hand.
+
 ---
+
+## The page says the engine is still starting, for minutes
+
+The browser opens before the model is loaded on purpose; 20–60 s of "推理引擎正在把模型读进显存"
+is normal. Past two minutes, click *看日志* (or read `logs\llama-server.log.err`). The usual
+causes, in order:
+
+1. **CUDA out of memory** - something else holds VRAM. `nvidia-smi`, close it, restart.
+2. **Model file missing** - `engine\models-35b\*.gguf` is not there. Re-run `.\setup.ps1`;
+   the download resumes.
+3. **Port 8080 or 4096 is taken** by something else. `netstat -ano | findstr :8080`.
+
+If the banner instead says *掉线* (dropped), a backend that was up has died - the log tail
+has the reason, and `start.ps1` needs to be run again.
+
+## The warm-up banner never turns green
+
+`start.ps1` sends one throwaway message right after start so the first real message is
+fast. It normally takes ~1 min on the 35B. If the banner says it failed, the first real
+message simply pays the cold start itself (~2 min); nothing else is affected. Sending a
+message while the warm-up is running cancels it, by design.
+
+`.\start.ps1 -NoWarmup` skips it altogether.
 
 ## The agent writes prose instead of calling tools
 
@@ -94,21 +121,39 @@ Missing CUDA runtime DLLs. `01-install-llama.ps1` extracts two zips - the main b
 4. Laptops: confirm the power mode is not set to power-saving. CPU throttling hits
    MoE expert compute hard
 
-## The first message takes about 2 minutes
+## A message takes about 2 minutes
 
-Expected, and worth knowing before you assume it hung. Measured on a freshly started
+That is the cold start: the system prompt + `AGENTS.md` (~4.5K tokens) being prefilled
+while the MoE expert weights are still paged in from disk. Measured on a freshly started
 35B server:
 
 ```
-prompt eval : 4521 tokens in 63.5 s  (~70 tok/s)   <- the system prompt + AGENTS.md
-eval        :   75 tokens in  4.0 s  (~19 tok/s)
+prompt eval : 4521 tokens in 54 s  (~84 tok/s)   <- the system prompt + AGENTS.md
+eval        :   75 tokens in  4 s  (~19 tok/s)
 ```
 
-Prefill is slow while the MoE expert weights are still being paged in from disk. Later
-messages in the same session reuse those pages and are much faster. Generation itself
-runs at ~15 tok/s throughout.
+Normally the launcher's warm-up pays this before you do, and `llama-server` runs with
+`--cache-reuse 256` so every later session reuses the cached prefix - measured first
+token in a *new* session after warm-up: 2.7 s, with 4486 of 4524 prompt tokens served
+from cache. You only see the 2-minute version if you sent a message before the warm-up
+finished, or started with `-NoWarmup`.
 
-A longer `AGENTS.md` directly lengthens that first prefill.
+A longer `AGENTS.md` directly lengthens the cold prefill. Restarting `llama-server`
+empties the cache; the warm-up runs again on the next `start.ps1`.
+
+## UnicodeDecodeError: 'gbk' codec can't decode byte ... (in the agent's Python)
+
+On a Chinese/Japanese/Korean Windows, Python's `open()` defaults to the ANSI codepage.
+`start.ps1` sets `PYTHONUTF8=1` for everything it launches, so this should not happen from
+the normal launcher. If you started `opencode serve` by hand, set it in that terminal
+first.
+
+## Double-clicking Fish.AI.cmd flashes a window and disappears
+
+The window stays open (with `pause`) whenever the script fails, so an instant close means
+a very early failure: usually the `.cmd` was moved out of the repo folder. Keep the
+desktop shortcut pointing at the checkout, or run `.\start.ps1` from a terminal to see the
+error.
 
 ---
 

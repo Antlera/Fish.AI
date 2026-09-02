@@ -120,6 +120,11 @@ $srvArgs = @(
     '--host', '127.0.0.1'
     '--port', $Port
     '--metrics'
+    # Reuse cached KV for any matching chunk >= 256 tokens, not only an exact prefix.
+    # The agent's system prompt is identical across sessions, so after the launcher's
+    # warm-up turn a new session skips almost all of its prefill (measured: 3104 of
+    # 3123 prompt tokens served from cache).
+    '--cache-reuse', '256'
 )
 if ($NCpuMoe -gt 0) { $srvArgs += @('--n-cpu-moe', $NCpuMoe) }
 if ($p.Reasoning)   { $srvArgs += @('--reasoning', $p.Reasoning) }

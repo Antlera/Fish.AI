@@ -1,7 +1,12 @@
 #requires -Version 5.1
 <#
-  04-install-agent.ps1 - Install the agent runtime (OpenCode) and point it at the
-  local inference server.
+  04-install-agent.ps1 - Install the agent runtime (OpenCode).
+
+  Configuration is NOT written to ~\.config\opencode: it lives in
+  app\workspace\opencode.json, which OpenCode picks up as project config because
+  start.ps1 launches it with that directory as the working directory. That keeps
+  Fish.AI from touching (or being broken by) whatever global OpenCode setup the
+  user already has.
 
   This is the core install. The Snowflake integration is separate and optional:
   snowflake\scripts\01-install-mcp.ps1.
@@ -17,29 +22,34 @@ $Root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent   # repo root
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [Environment]::GetEnvironmentVariable('Path','User')
 
-
 if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
     Write-Host "Installing OpenCode..." -ForegroundColor Cyan
-    & npm install -g opencode-ai
+    & npm install -g opencode-ai --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) {
         Write-Host "npm failed, trying winget..." -ForegroundColor Yellow
         & winget install --id SST.opencode -e --accept-package-agreements --accept-source-agreements
     }
+    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+                [Environment]::GetEnvironmentVariable('Path','User')
+} else {
+    Write-Host "already installed" -ForegroundColor DarkGray
 }
 & opencode --version
 if ($LASTEXITCODE -ne 0) { throw "OpenCode install failed. Reopen the terminal so PATH picks it up, then retry." }
 
-$ocDir = Join-Path $env:USERPROFILE '.config\opencode'
-New-Item -ItemType Directory -Force -Path $ocDir | Out-Null
-$ocTarget = Join-Path $ocDir 'opencode.json'
-$source   = Join-Path $Root 'engine\config\opencode.json'
+$cfg = Join-Path $Root 'app\workspace\opencode.json'
+if (-not (Test-Path $cfg)) { throw "missing $cfg - the checkout is incomplete" }
+Write-Host "config: $cfg" -ForegroundColor DarkGray
 
-if (Test-Path $ocTarget) {
-    Write-Host "$ocTarget already exists - not overwriting." -ForegroundColor Yellow
-    Write-Host "If the local provider is missing, merge it from $source by hand." -ForegroundColor DarkGray
-} else {
-    Copy-Item $source $ocTarget -Force
-    Write-Host "wrote $ocTarget" -ForegroundColor Green
+# A stale copy from an older Fish.AI version would silently take precedence for
+# other projects and confuse debugging; tell the user it is there, do not touch it.
+$global = Join-Path $env:USERPROFILE '.config\opencode\opencode.json'
+if (Test-Path $global) {
+    $txt = Get-Content $global -Raw -ErrorAction SilentlyContinue
+    if ($txt -match 'llama\.cpp \(local\)') {
+        Write-Host "note: $global still has the local provider from an older install." -ForegroundColor DarkYellow
+        Write-Host "      Fish.AI no longer needs it; delete it if you use OpenCode for other things." -ForegroundColor DarkYellow
+    }
 }
 
 Write-Host "`nAgent runtime ready. Next: .\start.ps1 from the repo root" -ForegroundColor Green

@@ -40,49 +40,73 @@ That is the whole design: **the model decides what to compute, Python does the c
 
 ## ✨ Highlights
 
-- 📂 **Reads your local files** — Excel, CSV, JSON, text. It writes the parsing code itself, nothing to upload.
+- 📂 **Drag a file onto the page** — Excel, CSV, JSON, text, parquet, SPSS/SAS/Stata. It writes the parsing code itself, nothing to upload anywhere.
 - 🧮 **Code-verified statistics** — every number traces back to a snippet you can re-run.
 - 📋 **Audit trail** — a side panel keeps every command it ran and every output.
-- 🔒 **Asks before it acts** — no command runs without your approval.
+- 🔒 **Asks before it acts** — no command runs without your approval; the dialog shows the exact command.
 - 💬 **Asks you back** — when a request is ambiguous it pops a multiple-choice question.
-- ⚡ **Two commands** — `.\setup.ps1`, then `.\start.ps1`.
+- ⚡ **Warm from the start** — the launcher pre-fills the model's prompt once, so the first real question answers in seconds instead of two minutes.
+- 🖱️ **One line to install, one click to run** — or `.\setup.ps1` then `.\start.ps1` if you prefer a terminal.
 
 ## 📦 Install
 
 **You need:** Windows 10/11 · an NVIDIA GPU with 4 GB+ VRAM and its driver · 12 GB+ RAM · 25 GB free disk
 
+Open PowerShell and paste:
+
 ```powershell
-git clone https://github.com/<you>/Fish.AI.git
-cd Fish.AI
-.\setup.ps1
+irm https://raw.githubusercontent.com/Antlera/Fish.AI/main/install.ps1 | iex
 ```
 
-That is the whole install. `setup.ps1` installs **Python and Node.js via winget if they
-are missing**, then fetches llama.cpp, the model weights and the agent runtime. It is
-re-runnable and skips whatever is already done.
+That is the whole install. It clones the repo into `~\Fish.AI` (installing git first if
+needed) and runs `setup.ps1`, which installs **Python and Node.js via winget if they are
+missing**, then fetches llama.cpp, the model weights, the agent runtime and the Python
+data stack, and puts a **Fish.AI** shortcut on your desktop. Everything is re-runnable
+and skips whatever is already done. Expect 10–30 minutes, most of it the 9.4 GB download.
 
 The one thing it will not install for you is the NVIDIA driver — that needs a reboot and
 the right variant for your card, so it stays manual.
 
-Rather install the prerequisites yourself? `.\setup.ps1 -NoAutoInstall` reports what is
-missing instead of installing it.
+<details>
+<summary>Other ways to install</summary>
 
-Smaller machine? `.\setup.ps1 -Model bonsai8b` (1.1 GB, much faster, noticeably less accurate).
+Already cloned? Run `.\setup.ps1`, or double-click `Setup.cmd` — the `.cmd` wrappers run
+with a per-process execution policy, so no `Set-ExecutionPolicy` is needed.
+
+```powershell
+git clone https://github.com/Antlera/Fish.AI.git
+cd Fish.AI
+.\setup.ps1
+```
+
+Options for `setup.ps1` (or as environment variables for the one-liner, e.g.
+`$env:FISH_MODEL='bonsai8b'` before `irm ... | iex`):
+
+| | |
+|---|---|
+| `-Model bonsai8b` | smaller machine: 1.1 GB, much faster, noticeably less accurate |
+| `-NoAutoInstall` | report missing prerequisites instead of installing them |
+| `-NoShortcut` | do not create the desktop shortcut |
+| `$env:FISH_DIR` | one-liner only: where to clone (default `~\Fish.AI`) |
+
+Fish.AI does not touch `~\.config\opencode`. Its agent config lives in
+`app\workspace\opencode.json`, so an existing OpenCode setup is left alone.
+</details>
 
 ## 🚀 Quick Start
 
-```powershell
-.\start.ps1
-```
+Double-click the **Fish.AI** desktop shortcut (or `Fish.AI.cmd`, or run `.\start.ps1`).
 
-Opens <http://127.0.0.1:8090>. `Ctrl+C` stops everything.
+The browser opens right away at <http://127.0.0.1:8090> and shows what is still loading.
+The model takes 20–60 s to load, then the launcher **warms it up** for about a minute —
+a banner tells you when it is done. After that, the first question answers in seconds.
+`Ctrl+C` in the terminal (or closing it) stops everything.
 
-Put your data files in `app\workspace\` — that is the directory the agent can read.
+**Getting data in:** drag files onto the page, click 📎, or use *打开文件夹* to open
+`app\workspace\` — that is the directory the agent can read.
 
-> **The very first message takes about 2 minutes.** Prefill on a cold 35B model runs at
-> ~70 tok/s while its expert weights are still being paged in — a 4.5K-token system
-> prompt alone costs ~60 s. It is not a hang. Later messages in the same session are much
-> faster, and generation runs at ~15 tok/s throughout.
+> Sent a message before the warm-up finished? It works, but that message pays the cold
+> start itself: ~2 minutes on the 35B model. Everything after it is fast either way.
 
 ## 📊 Benchmarks
 
@@ -117,14 +141,25 @@ attention, so 64K of context costs 0.7 GB where a 4B dense model needs 5.1 GB.
 `bonsai8b` is genuinely fast but called a dataset containing an obvious outlier
 "outlier-free" during testing. Use it for quick chatting, not for analysis you rely on.
 
+**Warm-up.** The agent's system prompt plus `AGENTS.md` is ~4.5K tokens and identical for
+every session. Measured on the 35B, same machine:
+
+| | Prefill | First token |
+|---|---|---|
+| Cold (first message ever) | 4521 tokens in 54 s | ~1–2 min |
+| New session after warm-up | 38 tokens (4486 served from cache) | **2.7 s** |
+
+The launcher does the cold turn itself while you are still opening the browser, and
+`llama-server` runs with `--cache-reuse 256` so later sessions reuse that prefix.
+
 ## 🧩 How It Works
 
 ```
 ┌────────────┐     ┌──────────────┐     ┌────────────────┐
 │  Browser   │────▶│  server.mjs  │────▶│ opencode serve │
-│   :8090    │◀────│  static+SSE  │◀────│     :4096      │
-└────────────┘     └──────────────┘     └───────┬────────┘
-                                                │
+│   :8090    │◀────│ static + SSE │◀────│     :4096      │
+│ drag&drop  │     │ files, warm  │     └───────┬────────┘
+└────────────┘     └──────────────┘             │
                                    ┌────────────┴─────────────┐
                                    ▼                          ▼
                           ┌────────────────┐        ┌──────────────────┐
@@ -168,22 +203,26 @@ Treat it as a starting point, not a finished feature. See
 
 | Symptom | Cause |
 |---|---|
-| First message takes ~2 minutes | Normal. Cold-model prefill; later messages are much faster. |
+| Page says the engine is still starting after 2+ minutes | Click *看日志* in the banner, or read `logs\llama-server.log.err`. Usually CUDA out of memory: close GPU-heavy apps. |
+| A message takes ~2 minutes | It was sent before the warm-up finished (or with `-NoWarmup`). One-off; later messages are fast. |
 | Agent writes prose instead of using tools | Context overflow — tool definitions fell out of the window. Start a new session. |
 | A command "succeeded" with no output | On Windows, `python -c` with embedded newlines silently produces nothing. Use one line, or write a `.py` file. |
 | Answers come back empty | Thinking mode is on. `03-start-server.ps1` passes `--reasoning off` for models that need it. |
+| `UnicodeDecodeError: 'gbk'` while reading a file | `start.ps1` sets `PYTHONUTF8=1` for the agent; if you launched things by hand, set it yourself. |
 
 Full list by symptom: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ## 📁 Layout
 
 ```
-setup.ps1              one-shot install
-start.ps1              one-shot run
-app/                   web UI + API proxy          -> app/README.md
-  workspace/           your data files; AGENTS.md defines agent behaviour
-engine/                llama.cpp, model downloads, agent runtime
+install.ps1            one-line bootstrap: git clone + setup
+setup.ps1  Setup.cmd   one-shot install (Setup.cmd = double-click version)
+start.ps1  Fish.AI.cmd one-shot run     (Fish.AI.cmd = double-click version)
+app/                   web UI + API proxy + file API + warm-up   -> app/README.md
+  workspace/           your data files; AGENTS.md = agent rules; opencode.json = agent config
+engine/                llama.cpp, model downloads
   scripts/             numbered install/verify steps, runnable individually
+logs/                  runtime logs from start.ps1 (git-ignored)
 snowflake/             optional read-only Snowflake auditing  -> snowflake/README.md
 ```
 

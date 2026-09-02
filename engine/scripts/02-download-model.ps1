@@ -1,6 +1,7 @@
 #requires -Version 5.1
 <#
-  02-download-model.ps1 - Fetch GGUF weights. Resumable; the hf CLI handles that.
+  02-download-model.ps1 - Fetch GGUF weights. Resumable: re-running picks up where
+  an interrupted download stopped.
 
   -Model names match 03-start-server.ps1 exactly, so this works:
 
@@ -8,6 +9,11 @@
       pwsh scripts\03-start-server.ps1              # a3b, the default
 
   Pick a different one with -Model and pass the same name to 03.
+
+  The download goes through huggingface_hub's Python API rather than the `hf` CLI:
+  pip puts console scripts in a Scripts\ directory that is often not on PATH
+  (Microsoft Store Python never adds it), and "hf: command not found" right after a
+  successful pip install is a confusing place to fail.
 #>
 
 param(
@@ -22,7 +28,8 @@ $Root = Split-Path $PSScriptRoot -Parent
 # Pull the machine+user PATH in so a freshly installed tool is visible here.
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [Environment]::GetEnvironmentVariable('Path','User')
-
+$env:PYTHONUTF8 = '1'
+$env:HF_HUB_DISABLE_TELEMETRY = '1'
 
 # Keep this table in sync with $PROFILES in 03-start-server.ps1.
 $CATALOG = @{
@@ -57,10 +64,19 @@ $m = $CATALOG[$Model]
 $Models = Join-Path $Root $m.Dir
 New-Item -ItemType Directory -Force -Path $Models | Out-Null
 
-if (-not (Get-Command hf -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing the huggingface_hub CLI..." -ForegroundColor Cyan
-    & python -m pip install -U "huggingface_hub[cli]"
-    if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+# Already there? Then there is nothing to do - the hub client would only re-verify.
+$have = Get-ChildItem $Models -Filter '*.gguf' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $m.Pattern }
+if ($have) {
+    $gb = [math]::Round(($have | Measure-Object Length -Sum).Sum / 1GB, 2)
+    Write-Host "already downloaded: $($have.Name -join ', ')  ($gb GB)" -ForegroundColor DarkGray
+    exit 0
+}
+
+& python -c "import huggingface_hub" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing the huggingface_hub client..." -ForegroundColor Cyan
+    & python -m pip install -q -U "huggingface_hub[hf_transfer]"
+    if ($LASTEXITCODE -ne 0) { throw "pip install huggingface_hub failed" }
 }
 
 Write-Host ""
@@ -71,8 +87,19 @@ Write-Host ("into  : {0}" -f $Models)       -ForegroundColor DarkGray
 Write-Host ("note  : {0}" -f $m.Note)       -ForegroundColor DarkYellow
 Write-Host ""
 
-& hf download $m.Repo --include $m.Pattern --local-dir $Models
-if ($LASTEXITCODE -ne 0) { throw "download failed" }
+$dl = Join-Path $env:TEMP 'fish-download.py'
+@'
+import sys
+from huggingface_hub import snapshot_download
+repo, pattern, dest = sys.argv[1:4]
+path = snapshot_download(repo_id=repo, allow_patterns=[pattern], local_dir=dest)
+print("downloaded to", path)
+'@ | Set-Content $dl -Encoding UTF8
+
+& python $dl $m.Repo $m.Pattern $Models
+$code = $LASTEXITCODE
+Remove-Item $dl -Force -ErrorAction SilentlyContinue
+if ($code -ne 0) { throw "download failed - check your network and re-run; it resumes where it stopped" }
 
 $files = Get-ChildItem $Models -Recurse -Filter '*.gguf'
 if (-not $files) { throw "no .gguf files were downloaded" }

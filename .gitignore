@@ -30,7 +30,11 @@ app/**/connections.toml
 # ---- Working directory: the user's own data files stay local ----
 app/workspace/*
 !app/workspace/AGENTS.md
+!app/workspace/opencode.json
 !app/workspace/.gitkeep
+
+# ---- Runtime logs written by start.ps1 ----
+logs/
 
 # ---- Scratch ----
 *.orig

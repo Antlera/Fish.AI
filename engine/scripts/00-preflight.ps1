@@ -108,8 +108,10 @@ Check "VRAM >= 3.5 GB" {
 
 Check "free VRAM >= 3.0 GB" {
     $mb = [int]((& nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits) -split "`n")[0].Trim()
-    @{ ok = ($mb -ge 3000); detail = "$mb MB free" }
-} $null "Close browsers with hardware acceleration and other GPU consumers. If Fish.AI is already running, that is expected."
+    # A warning, not a failure: this is about what is running *right now* (a browser,
+    # or Fish.AI itself during a re-run of setup), not about the machine.
+    @{ ok = ($mb -ge 3000); warn = ($mb -lt 3000); detail = "$mb MB free" }
+} $null "Close browsers with hardware acceleration and other GPU consumers before starting. If Fish.AI is already running, that is expected."
 
 Check "system RAM >= 12 GB" {
     $gb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
@@ -126,8 +128,9 @@ Check "free disk >= 25 GB" {
 
 Check "CPU cores" {
     $n = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
-    @{ ok = ($n -ge 8); detail = "$n logical" }
-} $null "Few cores noticeably slow the CPU-side MoE expert compute"
+    # Fewer cores means slower, not broken - do not block the install over it.
+    @{ ok = ($n -ge 8); warn = ($n -lt 8); detail = "$n logical" }
+} $null "Few cores noticeably slow the CPU-side MoE expert compute; expect lower tok/s"
 
 Check "Python 3.10+" {
     $v = & python --version 2>&1
