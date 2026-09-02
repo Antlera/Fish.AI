@@ -213,11 +213,41 @@ const TEAMS_EXE = process.env.FISH_TEAMS_EXE ||
   join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'ms-teams.exe')
 const TEAMS_INTERVAL = Number(process.env.FISH_TEAMS_INTERVAL ?? 240) * 1000
 const teams = { enabled: false, found: false, exe: TEAMS_EXE, intervalSec: TEAMS_INTERVAL / 1000,
-                lastRun: null, runs: 0, error: null, timer: null }
+                lastRun: null, runs: 0, error: null, awake: false, awakeError: null, timer: null, awakeProc: null }
+const KEEPAWAKE = fileURLToPath(new URL('../engine/tools/keepawake.py', import.meta.url))
 
 function teamsView() {
-  const { timer, ...v } = teams
+  const { timer, awakeProc, ...v } = teams
   return v
+}
+
+/* The same switch also keeps the display on (engine/tools/keepawake.py holds a
+ * SetThreadExecutionState request, like a video player would), so the idle
+ * screen-off -> lock does not happen while an answer is being read. */
+function awakeStart() {
+  if (teams.awakeProc) return
+  try {
+    const child = spawn('python', [KEEPAWAKE, String(process.pid)],
+                        { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    teams.awakeProc = child
+    teams.awakeError = null
+    child.stdout.on('data', (b) => { if (String(b).includes('keep-awake on')) teams.awake = true })
+    child.stderr.on('data', (b) => { teams.awakeError = String(b).trim().slice(-200) })
+    child.on('error', (e) => { teams.awakeError = e.message; teams.awake = false; teams.awakeProc = null })
+    child.on('exit', (code) => {
+      teams.awake = false
+      teams.awakeProc = null
+      if (code && teams.enabled) teams.awakeError = teams.awakeError || `keepawake exited with ${code}`
+    })
+  } catch (e) {
+    teams.awakeError = e.message
+  }
+}
+
+function awakeStop() {
+  if (teams.awakeProc) { try { teams.awakeProc.kill() } catch { /* already gone */ } }
+  teams.awakeProc = null
+  teams.awake = false
 }
 
 function teamsPing() {
@@ -240,18 +270,23 @@ function teamsPing() {
 async function teamsSet(enabled) {
   try { await stat(TEAMS_EXE); teams.found = true } catch { teams.found = false }
   if (teams.timer) { clearInterval(teams.timer); teams.timer = null }
-  teams.enabled = enabled && teams.found
-  if (teams.enabled) {
-    teamsPing()
-    teams.timer = setInterval(teamsPing, TEAMS_INTERVAL)
-    log(`teams: keeping status green every ${teams.intervalSec}s`)
-  } else if (enabled && !teams.found) {
-    log(`teams: not found at ${TEAMS_EXE}, keep-green disabled`)
+  teams.enabled = enabled
+  if (enabled) {
+    awakeStart()
+    if (teams.found) {
+      teamsPing()
+      teams.timer = setInterval(teamsPing, TEAMS_INTERVAL)
+      log(`stay-online: Teams presence every ${teams.intervalSec}s + display kept on`)
+    } else {
+      log(`stay-online: display kept on; Teams not found at ${TEAMS_EXE}, presence part skipped`)
+    }
   } else {
-    log('teams: keep-green off')
+    awakeStop()
+    log('stay-online: off')
   }
   return teamsView()
 }
+process.on('exit', awakeStop)
 
 /* ---------------- workspace files ---------------- */
 const BAD_NAME = /[<>:"/\|?* -]/

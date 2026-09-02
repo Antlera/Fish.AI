@@ -633,20 +633,20 @@ function renderTeams(t) {
   const b = $('btn-teams'), dot = $('d-teams')
   if (!t) return
   b.classList.toggle('on', !!t.enabled)
-  b.classList.toggle('na', !t.found)
-  dot.className = `dot ${t.enabled ? 'up' : ''}`
-  if (!t.found) {
-    b.title = `没找到 Teams(${t.exe})。装了新版 Teams 之后重启 Fish.AI 即可;也可以用 FISH_TEAMS_EXE 指定路径。`
-  } else if (t.enabled) {
-    const ago = t.lastRun ? `${Math.round((Date.now() - t.lastRun) / 1000)} 秒前` : '还没'
-    b.title = `正在每 ${t.intervalSec} 秒让 Teams 保持"有空";上次 ${ago},共 ${t.runs} 次${t.error ? `;出错:${t.error}` : ''}。点击关闭。`
+  b.classList.toggle('na', !t.found && !t.enabled)
+  dot.className = `dot ${t.enabled ? (t.error || t.awakeError ? 'busy' : 'up') : ''}`
+  const screen = t.enabled ? (t.awake ? '屏幕保持点亮、不会因空闲锁屏' : `屏幕保持点亮:未生效${t.awakeError ? `(${t.awakeError})` : ''}`) : ''
+  if (t.enabled) {
+    const presence = t.found
+      ? `每 ${t.intervalSec} 秒让 Teams 保持"有空"(上次 ${t.lastRun ? `${Math.round((Date.now() - t.lastRun) / 1000)} 秒前` : '还没'},共 ${t.runs} 次${t.error ? `,出错:${t.error}` : ''})`
+      : `没找到 Teams(${t.exe}),只保持屏幕`
+    b.title = `开着:${presence};${screen}。点击关闭。`
   } else {
-    b.title = '点击开启:每 4 分钟让 Teams 保持"有空",不用去动鼠标'
+    b.title = `点击开启:每 4 分钟让 Teams 保持"有空",并让屏幕保持点亮不锁屏${t.found ? '' : '(这台机器没找到 Teams,只有屏幕这一半会生效)'}`
   }
 }
 $('btn-teams').addEventListener('click', async () => {
   const t = state.status?.teams
-  if (t && !t.found) { alert($('btn-teams').title); return }
   try {
     const r = await api('/fish/teams', { enabled: !(t && t.enabled) })
     if (state.status) state.status.teams = r
