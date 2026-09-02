@@ -22,17 +22,25 @@ $Root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent   # repo root
 $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [Environment]::GetEnvironmentVariable('Path','User')
 
-if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
-    Write-Host "Installing OpenCode..." -ForegroundColor Cyan
-    & npm install -g opencode-ai --no-audit --no-fund
+# 1.18.26 is the oldest version verified to honour the per-agent tool list (older ones
+# still hand the model every built-in tool, which is what Fish.AI's config trims).
+$MinVersion = [version]'1.18.26'
+$have = $null
+if (Get-Command opencode -ErrorAction SilentlyContinue) {
+    try { $have = [version]((& opencode --version 2>$null) -replace '[^\d.].*$', '') } catch { $have = $null }
+}
+if ($have -and $have -ge $MinVersion) {
+    Write-Host "already installed ($have)" -ForegroundColor DarkGray
+} else {
+    if ($have) { Write-Host "OpenCode $have is older than $MinVersion - upgrading..." -ForegroundColor Cyan }
+    else       { Write-Host "Installing OpenCode..." -ForegroundColor Cyan }
+    & npm install -g opencode-ai@latest --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) {
         Write-Host "npm failed, trying winget..." -ForegroundColor Yellow
         & winget install --id SST.opencode -e --accept-package-agreements --accept-source-agreements
     }
     $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                 [Environment]::GetEnvironmentVariable('Path','User')
-} else {
-    Write-Host "already installed" -ForegroundColor DarkGray
 }
 & opencode --version
 if ($LASTEXITCODE -ne 0) { throw "OpenCode install failed. Reopen the terminal so PATH picks it up, then retry." }

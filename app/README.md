@@ -6,11 +6,18 @@ this directory is not meant to be launched on its own. There is nothing to `npm 
 ## Processes it talks to
 
 ```
-node server.mjs  :8090   this directory - serves public/, proxies /api/* to :4096,
+node server.mjs  :8090   this directory - serves public/, proxies /oc/* and /api/* to :4096,
                          exposes workspace/ to the browser, warms the model up
 opencode serve   :4096   agent runtime, working directory = app/workspace/
+  └ fishkernel.py        MCP server it spawns: the agent's persistent Python session
 llama-server     :8080   inference
 ```
+
+**The UI uses OpenCode's v1 API** (`/session`, `/event`, `/permission`, `/question`),
+reached through the `/oc/` prefix. The v2 API under `/api/` does not hand MCP or custom
+tools to the model in 1.18.x (verified with a fake model endpoint that logs the tool
+list), and the Python kernel is an MCP server. `/api/*` is still proxied for health
+checks and diagnostics.
 
 `server.mjs` is not redundant plumbing: same-origin removes CORS and EventSource
 cross-origin problems, the status bar needs to poll two different backends without the
@@ -48,6 +55,7 @@ only touches the first row:
 | Part | Functions | Role |
 |---|---|---|
 | Render | `addMessage` `ensureTool` `recordStat` `md` `markDirty` | builds DOM; token deltas are batched into one `requestAnimationFrame` |
+| Provenance | `harvestNumbers` `markProvenance` | every number in a finished answer is looked up in this session's tool outputs; misses get `mark.unv` |
 | Status | `refreshStatus` `banner` `renderThinking` | engine/warm-up banner, "reading prompt 12s" indicator, tok/s, context bar |
 | Files | `loadFiles` `uploadFiles` | file list, drag-and-drop anywhere on the page, click-to-insert filename |
 | History | `showHistory` | switch to / delete previous sessions; first message becomes the title |
@@ -58,46 +66,56 @@ only touches the first row:
 (`df.to_markdown()`), lists that survive blank lines between items, blockquotes, and
 `$$` blocks (kept verbatim, not rendered).
 
-## Six things about the OpenCode API (learned the hard way)
+## Eight things about the OpenCode API (learned the hard way)
 
-**1. Token deltas are only on the global event stream.**
-`/api/session/{id}/event` emits `text.started` and `text.ended` and nothing in between.
-Subscribe to `/api/event` and filter by `sessionID`.
+**1. Only the v1 API gives the model MCP and custom tools.**
+`POST /api/session/{id}/prompt` (v2) sends the built-in tools and nothing else, in
+1.18.21 and 1.18.26 alike; `POST /session/{id}/prompt_async` (v1) sends `python_*`, custom
+`.opencode/tools/*.ts`, and honours the agent's `tools` toggles. The two paths also emit
+different events (`session.next.*` vs `message.part.*`) and store the same messages in
+different shapes. The whole frontend is on v1 for this reason.
 
-**2. `session.idle` is never emitted.**
-Only `session.next.step.ended` arrives. If you unlock the send button on `session.idle`
-alone it stays disabled forever and the second message can never be sent. Unlock based on
-`step.ended`'s `finish` field - if it contains `tool`, more steps are coming, stay busy.
+**2. The agent's `tools` toggles are only applied from 1.18.26.**
+1.18.21 hands the model all twelve built-in tools regardless of config. Also, the very
+first session after `opencode serve` starts has been seen to get the default config;
+`server.mjs` touches `/agent` and waits before the warm-up session.
 
-**3. `textID` is not globally unique.**
-It is per-message and is `text-0` on every turn. Key your map on
-`assistantMessageID + textID`, or turn two's text appends into turn one's bubble.
+**3. Text deltas come as `message.part.delta` with `messageID` + `partID`.**
+Key text bubbles on `${messageID}:${partID}`. `message.part.updated` carries the full
+part (`text`, `tool`, `step-start`, `step-finish`); a text part with `time.end` is final.
 
-**4. Permission and question are two separate mechanisms.**
+**4. `session.idle` is the end of a turn on v1.** `message.updated` with a `finish`
+other than `tool-calls` means the same thing; the UI accepts either.
+
+**5. Permission and question are two separate mechanisms.**
 
 | | permission | question |
 |---|---|---|
 | meaning | "may I run this command" | "I need you to choose something" |
-| endpoint | `/permission/{id}/reply` | `/question/{id}/reply` and `/reject` |
-| body | `{reply:"once"}` | `{answers:[["label",...]]}` |
+| endpoint | `POST /session/{sid}/permissions/{id}` | `/question/{id}/reply` and `/reject` |
+| body | `{response:"once"}` | `{answers:[["label",...]]}` |
+| pending list | `GET /permission` (all sessions; filter by `sessionID`) | `GET /question` |
 
 Implementing only permission means the agent hangs forever the first time it asks a
 question, with nothing shown in the UI.
 
-**5. Permission events usually have empty `metadata`.**
-To show *what will run*, look up the tool call via `source.callID`. A permission dialog
-that does not show the command is pointless.
+**6. Permission events usually have empty `metadata`.**
+To show *what will run*, look up the tool call via `tool.callID` (v1) / `source.callID`
+(v2). A permission dialog that does not show the command is pointless.
 
-**6. History and the event stream name the same fields differently.**
-A tool part from `GET /message` has `id` / `name` / `state.error = {type,message}`; the
-same thing on the event stream is `callID` / `tool` / a string. `restoreTool()` accepts
-both. Also: with prefix caching, `tokens.input` on `step.ended` is only the *uncached*
-part - add `tokens.cache.read` to get real context usage.
+**7. Prefix caching hides context usage.**
+`tokens.input` is only the *uncached* part - add `tokens.cache.read` to get real context
+usage.
 
-**7. Provider config is per project, not per environment.**
+**8. Provider config is per project, not per environment.**
 `OPENCODE_CONFIG` is honoured by `GET /config` but *not* by the provider registry that
 actually makes the LLM call (it kept using the global file). `opencode.json` in the
 working directory works. That is why the config lives in `workspace/`.
+
+**Bonus: never start `opencode serve` from git-bash.** It inherits `SHELL=/usr/bin/bash`,
+its bash tool then spawns a shell that does not exist on Windows, and every command
+returns empty output - the model loops trying variations. `start.ps1` and the eval
+runner start it from PowerShell / with `SHELL` removed.
 
 ## resync(): why recovery is one function
 

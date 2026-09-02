@@ -127,6 +127,11 @@ function warmView() {
 
 const WARM_PROMPT = 'This is a warm-up message from the launcher. Reply with the single word OK. Do not use any tool.'
 
+// Everything below talks to opencode's v1 API (/session, /event, ...), exposed to the
+// browser under /oc/. The v2 API (/api/...) does not hand MCP tools to the model in
+// 1.18.x, and Fish.AI's Python kernel is an MCP server - so v1 it is, for the warm-up
+// too: the cached prefix must be the one real prompts use.
+
 async function warmup() {
   if (process.env.FISH_NO_WARMUP === '1') { warm.state = 'skipped'; return }
   warm.state = 'waiting'
@@ -136,8 +141,11 @@ async function warmup() {
     if (userPrompted) { warm.state = 'skipped'; return }
     await sleep(2000)
   }
-  // The proxy is up but opencode may still be booting internally; give it a beat.
-  await sleep(1500)
+  // The proxy is up but opencode may still be booting internally. The first session
+  // after boot has been seen to get the default (global) config instead of the
+  // project one, so touch the agent list first and give it a beat.
+  await oc('GET', '/agent').catch(() => {})
+  await sleep(2500)
   if (userPrompted) { warm.state = 'skipped'; return }
 
   warm.state = 'running'
@@ -148,30 +156,31 @@ async function warmup() {
   const promptBefore = (await status()).llama.promptTokens ?? null
   let sid = null
   try {
-    const s = await oc('POST', '/api/session', {})
+    const s = await oc('POST', '/session', {})
     sid = s.id
     warm.sessionID = sid
-    await oc('POST', `/api/session/${sid}/prompt`, { prompt: { text: WARM_PROMPT } })
+    await oc('POST', `/session/${sid}/prompt_async`, { parts: [{ type: 'text', text: WARM_PROMPT }] })
 
     const deadline = Date.now() + 300_000
     let done = false
     while (Date.now() < deadline && !warm.cancelled) {
       await sleep(1500)
-      const msgs = await oc('GET', `/api/session/${sid}/message`).catch(() => [])
-      const a = [...(msgs || [])].reverse().find((m) => (m.type ?? m.role) === 'assistant')
+      const msgs = await oc('GET', `/session/${sid}/message`).catch(() => [])
+      const a = [...(msgs || [])].reverse().find((m) => (m.info?.role ?? m.role) === 'assistant')
       if (a) {
-        const parts = a.content ?? a.parts ?? []
+        const info = a.info ?? a
+        const parts = a.parts ?? a.content ?? []
         // Prefill is over the moment the first token or tool call shows up. The
         // finish flag is the clean signal; the others are fallbacks for a model
         // that decides to "help" by calling a tool despite being told not to.
-        if (a.finish || parts.some((p) => p.type === 'tool' || (p.type === 'text' && p.text))) {
+        if (info.finish || parts.some((p) => p.type === 'tool' || (p.type === 'text' && p.text))) {
           done = true
-          if (a.error) warm.error = a.error.message || a.error.name || 'error'
+          if (info.error) warm.error = info.error.message || info.error.data?.message || info.error.name || 'error'
           break
         }
       }
-      const perms = await oc('GET', `/api/session/${sid}/permission`).catch(() => [])
-      if ((Array.isArray(perms) ? perms : perms ? [perms] : []).length) { done = true; break }
+      const perms = await oc('GET', '/permission').catch(() => [])
+      if ((Array.isArray(perms) ? perms : []).some((p) => p.sessionID === sid)) { done = true; break }
     }
     warm.state = warm.error ? 'failed' : done ? 'done' : warm.cancelled ? 'cancelled' : 'timeout'
     if (done && promptBefore != null) {
@@ -185,7 +194,7 @@ async function warmup() {
     warm.endedAt = Date.now()
     warm.sessionID = null
     if (sid) {
-      await oc('POST', `/api/session/${sid}/interrupt`, {}).catch(() => {})
+      await oc('POST', `/session/${sid}/abort`, {}).catch(() => {})
       await sleep(500)
       await oc('DELETE', `/session/${sid}`).catch(() => {})
     }
@@ -277,9 +286,11 @@ async function tailLog(which, lines = 40) {
 }
 
 /* ---------------- proxy ---------------- */
-/** Forward /api/* to opencode verbatim. SSE is streamed through without buffering. */
+/** Forward /api/* verbatim and /oc/* with the prefix stripped (opencode's v1 API).
+ *  SSE is streamed through without buffering. */
 async function proxy(req, res, url) {
-  const target = OPENCODE + url.pathname + url.search
+  const upstreamPath = url.pathname.startsWith('/oc/') ? url.pathname.slice(3) : url.pathname
+  const target = OPENCODE + upstreamPath + url.search
   const headers = {}
   for (const [k, v] of Object.entries(req.headers)) {
     if (!['host', 'connection', 'content-length'].includes(k)) headers[k] = v
@@ -293,7 +304,7 @@ async function proxy(req, res, url) {
   }
 
   // A real user prompt going out: the warm-up must get out of the way.
-  if (req.method === 'POST' && /^\/api\/session\/[^/]+\/prompt$/.test(url.pathname)) {
+  if (req.method === 'POST' && /^\/(api|oc)\/session\/[^/]+\/(prompt|prompt_async|message)$/.test(url.pathname)) {
     const sid = url.pathname.split('/')[3]
     if (sid !== warm.sessionID) {
       userPrompted = true
@@ -387,7 +398,7 @@ http.createServer(async (req, res) => {
       }
       return json(res, 200, { ok: true })
     }
-    if (p.startsWith('/api/')) return await proxy(req, res, url)
+    if (p.startsWith('/api/') || p.startsWith('/oc/')) return await proxy(req, res, url)
     return await serveStatic(res, p)
   } catch (e) {
     if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })

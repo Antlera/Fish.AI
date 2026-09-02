@@ -1,14 +1,16 @@
 /* Fish.AI for Elena —— 前端逻辑
  *
  * 和 opencode 的对接要点(踩过的坑,别改回去):
- *   1. token 级增量只在【全局】事件流 /api/event 上,session 级的
- *      /api/session/{id}/event 只给 text.started / text.ended。
- *      所以这里订阅全局流,再按 sessionID 过滤。
- *   2. POST /prompt 是异步的,立刻返回 message id,输出全靠 SSE。
- *   3. 所有 REST 响应都包在 {"data": ...} 里。
+ *   1. 用的是 opencode 的 v1 接口(/session、/event),经 server.mjs 以 /oc/ 前缀转发。
+ *      v2 接口(/api/...)在 1.18.x 里不把 MCP 工具和自定义工具交给模型,而 Fish.AI 的
+ *      Python 内核就是 MCP 工具 —— 换到 v1 是为了这个,不是偏好。
+ *   2. POST /prompt_async 是异步的,立刻返回,输出全靠 SSE(/oc/event 全局流,按 sessionID 过滤)。
+ *   3. 文本增量在 message.part.delta 上(messageID + partID 定位);message.part.updated 带完整
+ *      part(text / tool / step-start / step-finish);session.idle 是一轮结束的信号。
+ *   4. permission 和 question 是两套机制:前者"要不要执行这个命令",后者"请你做个选择"。
  *
  * 结构:渲染(addMessage/ensureTool/recordStat/md) → 事件(connect/handle) → 同步(resync)。
- * 另外三块是这一版加的:状态横幅(引擎启动/预热)、文件面板(拖拽上传)、历史会话。
+ * 另外几块:状态横幅(引擎启动/预热)、文件面板(拖拽上传)、历史会话、数字溯源高亮。
  */
 
 const $ = (id) => document.getElementById(id)
@@ -20,7 +22,7 @@ const api = async (path, body, method) => {
   })
   if (!r.ok) throw new Error(`${method || 'GET'} ${path} -> ${r.status} ${await r.text()}`)
   const j = await r.json().catch(() => ({}))
-  return j.data !== undefined ? j.data : j
+  return j && j.data !== undefined && !Array.isArray(j) ? j.data : j
 }
 
 const state = {
@@ -31,12 +33,14 @@ const state = {
   turnsSent: 0,       // 本页发出的消息数,第一条要提示"冷启动会慢"
   sessionTurns: 0,    // 当前会话里的用户消息数,第一条拿来当会话标题
   ctxWindow: null,
-  texts: new Map(),   // textKey -> {el, raw, dirty}
+  texts: new Map(),   // `${messageID}:${partID}` -> {el, raw, dirty, done}
   tools: new Map(),   // callID -> {el, name, argsRaw, input}
-  stepStart: null,
+  roles: new Map(),   // messageID -> 'user' | 'assistant'
+  toolNums: [],       // 本会话所有工具输出里出现过的数字,用来核对回答里的数字
   statCount: 0,
   status: null,       // 最近一次 /fish/status
   everUp: false,      // 引擎是否曾经就绪过——区分"还在启动"和"掉线了"
+  tpsLive: 0,
   files: [],
   es: null,          // EventSource,诊断用
   evCount: 0,        // 收到的事件总数
@@ -81,8 +85,8 @@ function md(src) {
   const splitRow = (t) => t.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim())
   const isRow = (t) => t.startsWith('|') && t.includes('|', 1)
   const isSep = (t) => /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(t)
-
   const isItem = (t) => /^[-*+]\s+/.test(t) || /^\d+[.)]\s+/.test(t)
+
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim()
     if (!t) {
@@ -165,16 +169,10 @@ function addUser(text) {
   return b
 }
 
-/** key 必须是 assistantMessageID + textID 的组合。
- *  textID 是【每条消息内部】的序号,实测每一轮都是 'text-0' ——
- *  只用它做 key 的话,第二轮的增量会追加进第一轮的气泡,新气泡永远不出现,
- *  表现就是"发了消息没反应"。 */
-const textKey = (d) => `${d.assistantMessageID}:${d.textID}`
-
 function ensureText(key) {
   let t = state.texts.get(key)
   if (!t) {
-    t = { el: addMessage('assistant', '<span class="cursor"></span>'), raw: '', dirty: false }
+    t = { el: addMessage('assistant', '<span class="cursor"></span>'), raw: '', dirty: false, done: false }
     state.texts.set(key, t)
   }
   return t
@@ -191,6 +189,7 @@ function markDirty(t) {
       if (!t.dirty) continue
       t.dirty = false
       t.el.innerHTML = md(t.raw) + (t.done ? '' : '<span class="cursor"></span>')
+      if (t.done) markProvenance(t.el)
     }
     for (const t of state.tools.values()) {
       if (!t.dirty) continue
@@ -201,6 +200,11 @@ function markDirty(t) {
   })
 }
 
+function finishText(t) {
+  t.done = true
+  markDirty(t)
+}
+
 /* 代码块复制按钮(事件委托,流式重渲染也不用重新绑定) */
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('.copy')
@@ -209,6 +213,65 @@ document.addEventListener('click', async (e) => {
   try { await navigator.clipboard.writeText(code); b.textContent = '已复制' } catch { b.textContent = '失败' }
   setTimeout(() => { b.textContent = '复制' }, 1200)
 })
+
+/* ---------------- 数字溯源 ----------------
+ * 产品的核心承诺是"每个数字都来自代码"。这里机械地核对一遍:回答里的数字如果在本会话
+ * 任何一次工具输出里都找不到,就画上虚线标出来。模型偶尔会把结果"顺手"改一位、四舍五入、
+ * 或者干脆自己编一个,人眼很难发现,这条线能。 */
+const NUM_RE = /(?<![\w.])-?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w])/g
+
+function harvestNumbers(text) {
+  for (const m of String(text || '').match(NUM_RE) || []) {
+    const v = parseFloat(m.replace(/,/g, ''))
+    if (Number.isFinite(v)) state.toolNums.push(v)
+  }
+  if (state.toolNums.length > 20000) state.toolNums = state.toolNums.slice(-10000)
+}
+
+// 显著性水平之类的约定俗成的常数,不是算出来的,不标
+const COMMON = new Set([0.05, 0.01, 0.001, 0.1, 0.5, 0.9, 0.95, 0.99, 1.5, 1.96, 2.576, 90, 95, 99, 100])
+
+function verified(raw) {
+  const v = parseFloat(raw.replace(/,/g, ''))
+  if (!Number.isFinite(v)) return true
+  if (COMMON.has(v)) return true
+  const dec = raw.includes('.') ? raw.split('.')[1].length : 0
+  const half = 0.5 * Math.pow(10, -dec)
+  return state.toolNums.some((p) => Math.abs(p - v) <= half + 1e-9 || (p !== 0 && Math.abs(p - v) / Math.abs(p) <= 5e-4))
+}
+
+function markProvenance(root) {
+  if (!state.toolNums.length) return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes = []
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.parentElement.closest('pre, code, .unv')) continue
+    nodes.push(n)
+  }
+  for (const n of nodes) {
+    const text = n.nodeValue
+    let last = 0
+    let frag = null
+    for (const m of text.matchAll(NUM_RE)) {
+      const raw = m[0]
+      // 列表序号、年份、行数这类小整数不值得标;带小数或 3 位以上的才核
+      if (!raw.includes('.') && raw.replace('-', '').length < 3) continue
+      if (verified(raw)) continue
+      frag = frag || document.createDocumentFragment()
+      frag.appendChild(document.createTextNode(text.slice(last, m.index)))
+      const mark = document.createElement('mark')
+      mark.className = 'unv'
+      mark.title = '这个数字没有出现在任何一次计算的输出里——可能是模型自己算的或改过的,请核对'
+      mark.textContent = raw
+      frag.appendChild(mark)
+      last = m.index + raw.length
+    }
+    if (frag) {
+      frag.appendChild(document.createTextNode(text.slice(last)))
+      n.parentNode.replaceChild(frag, n)
+    }
+  }
+}
 
 /* ---------------- 生成中提示 ---------------- */
 const thinking = document.createElement('div')
@@ -241,11 +304,14 @@ function renderThinking() {
 setInterval(renderThinking, 1000)
 
 /* ---------------- 工具卡片 ---------------- */
-// 这些是文件操作类工具,记进"计算记录"只会淹没真正的计算
-const NOISE = new Set(['read', 'write', 'edit', 'glob', 'grep', 'list', 'ls',
-                       'todowrite', 'todoread', 'task', 'patch', 'question'])
+// 这些工具的输出不是"计算结果",记进"计算记录"只会淹没真正的计算
+const NOISE = new Set(['read', 'write', 'edit', 'glob', 'grep', 'list', 'ls', 'todowrite', 'todoread',
+                       'task', 'patch', 'apply_patch', 'question', 'skill',
+                       'python_inspect_file', 'python_list_files', 'python_reset'])
 const TOOL_LABEL = { bash: '运行命令', read: '读取文件', write: '写入文件', edit: '修改文件',
-                     glob: '查找文件', grep: '搜索内容', list: '列目录', question: '提问' }
+                     glob: '查找文件', grep: '搜索内容', list: '列目录', question: '提问',
+                     python_run: '运行 Python', python_inspect_file: '查看数据文件',
+                     python_list_files: '列出文件', python_reset: '重置 Python 会话' }
 
 function ensureTool(callID, name) {
   let t = state.tools.get(callID)
@@ -261,7 +327,7 @@ function ensureTool(callID, name) {
   stream.appendChild(el)
   placeThinking()
   scroll()
-  t = { el, name: name || 'tool', argsRaw: '', input: null, dirty: false }
+  t = { el, name: name || 'tool', argsRaw: '', input: null, dirty: false, finished: false }
   state.tools.set(callID, t)
   return t
 }
@@ -276,7 +342,8 @@ function setToolInput(t, input) {
 
 function toolDone(callID, ok, payload) {
   const t = state.tools.get(callID)
-  if (!t) return
+  if (!t || t.finished) return
+  t.finished = true
   t.el.querySelector('.spin')?.remove()
   const st = t.el.querySelector('.tstate')
   st.textContent = ok ? '完成' : '失败'
@@ -291,12 +358,13 @@ function toolDone(callID, ok, payload) {
   body.append(lbl, pre)
 
   if (ok) t.el.open = false
+  if (ok) harvestNumbers(payload)
   if (ok && !NOISE.has(t.name)) recordStat(t, payload)
-  if (['bash', 'write', 'edit'].includes(t.name)) scheduleFiles()   // 它可能刚生成了文件
+  if (['bash', 'write', 'edit', 'python_run'].includes(t.name)) scheduleFiles()   // 它可能刚生成了文件
   scroll()
 }
 
-/** 从工具输入里挑出最值得展示的那一段(bash 的 command、SQL 的 sql,等等) */
+/** 从工具输入里挑出最值得展示的那一段(bash 的 command、python_run 的 code,等等) */
 function pickCode(input) {
   if (!input || typeof input !== 'object') return null
   for (const k of ['command', 'code', 'sql', 'query', 'script', 'statement']) {
@@ -316,7 +384,7 @@ function recordStat(t, output) {
   card.className = 'stat'
   const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   card.innerHTML = `<div class="hd"><span class="tag"></span><time></time></div>`
-  card.querySelector('.tag').textContent = t.name
+  card.querySelector('.tag').textContent = TOOL_LABEL[t.name] || t.name
   card.querySelector('time').textContent = time
 
   const code = pickCode(t.input)
@@ -583,20 +651,35 @@ function updateCtx(inputTokens) {
 let pendingPerm = null
 function askPermission(d) {
   pendingPerm = d
-  $('perm-title').textContent = `agent 请求:${TOOL_LABEL[d.action] || d.action || '执行操作'}`
-  $('perm-action').textContent = (d.resources || []).length
-    ? `涉及:${d.resources.join('、')}`
-    : '没有声明具体资源。'
-  // metadata 经常是空的。真正要给用户看的命令在对应的工具调用里,
-  // 通过 source.callID 回查 —— 弹窗不显示将要执行什么就失去了意义。
+  // v1 的字段是 permission / patterns / tool.callID;v2 是 action / resources / source.callID。两套都认。
+  const action = d.permission ?? d.action
+  const resources = (d.patterns ?? d.resources ?? []).filter((r) => r && r !== '*')
+  const callID = d.tool?.callID ?? d.source?.callID
+  $('perm-title').textContent = `agent 请求:${TOOL_LABEL[action] || action || '执行操作'}`
+  $('perm-action').textContent = resources.length ? `涉及:${resources.join('、')}` : ''
+  // metadata 经常是空的。真正要给用户看的代码在对应的工具调用里,通过 callID 回查 ——
+  // 弹窗不显示将要执行什么就失去了意义。permission 事件经常比带 input 的工具事件
+  // 先到(实测差几百毫秒),所以拿不到时隔一会儿再试,直到弹窗关掉。
   const meta = d.metadata || {}
-  const tool = d.source?.callID ? state.tools.get(d.source.callID) : null
-  const shown =
-    pickCode(meta) ||
-    (tool && (pickCode(tool.input) || tool.argsRaw)) ||
-    (d.resources || []).join('\n') ||
-    stringify(meta)
-  $('perm-body').textContent = shown && shown !== '{}' ? shown : '(agent 没有说明细节,谨慎批准)'
+  const render = () => {
+    const tool = callID ? state.tools.get(callID) : null
+    const shown =
+      pickCode(meta) ||
+      (tool && (pickCode(tool.input) || tool.argsRaw)) ||
+      resources.join('\n') ||
+      stringify(meta)
+    $('perm-body').textContent = shown && shown !== '{}' ? shown : '(正在等 agent 给出具体代码…)'
+    return !!(tool && (pickCode(tool.input) || tool.argsRaw))
+  }
+  if (!render()) {
+    let tries = 0
+    const timer = setInterval(() => {
+      if (pendingPerm !== d || render() || ++tries > 40) {
+        clearInterval(timer)
+        if (pendingPerm === d && tries > 40) $('perm-body').textContent = '(agent 没有说明细节,谨慎批准)'
+      }
+    }, 250)
+  }
   $('perm-mask').classList.add('on')
   renderThinking()
 }
@@ -608,7 +691,7 @@ async function replyPermission(reply) {
   if (!d) return
   state.lastEvent = Date.now()
   try {
-    await api(`/api/session/${d.sessionID}/permission/${d.id}/reply`, { reply })
+    await api(`/oc/session/${d.sessionID}/permissions/${d.id}`, { response: reply })
   } catch (e) {
     addMessage('assistant', `<p class="err">权限回复失败:${esc(e.message)}</p>`)
   }
@@ -689,7 +772,7 @@ async function replyQuestion(reject) {
 
   try {
     if (reject) {
-      await api(`/api/session/${d.sessionID}/question/${d.id}/reject`, {})
+      await api(`/oc/question/${d.id}/reject`, {})
       return
     }
     const answers = [...$('q-body').querySelectorAll('.qblock')].map((block) => {
@@ -699,7 +782,7 @@ async function replyQuestion(reject) {
       if (free) picked.push(free)
       return picked
     })
-    await api(`/api/session/${d.sessionID}/question/${d.id}/reply`, { answers })
+    await api(`/oc/question/${d.id}/reply`, { answers })
     setBusy(true)          // 回答完 agent 会接着跑
     state.lastEvent = Date.now()
   } catch (e) {
@@ -720,19 +803,22 @@ async function resync() {
   if (!state.sessionID) return
   let msgs, perms, questions
   try {
-    msgs = await api(`/api/session/${state.sessionID}/message`)
-    perms = await api(`/api/session/${state.sessionID}/permission`).catch(() => [])
-    questions = await api(`/api/session/${state.sessionID}/question`).catch(() => [])
+    msgs = await api(`/oc/session/${state.sessionID}/message`)
+    perms = await api('/oc/permission').catch(() => [])
+    questions = await api('/oc/question').catch(() => [])
   } catch (e) { return fail(e) }
 
   stream.innerHTML = ''
   state.texts.clear()
   state.tools.clear()
+  state.roles.clear()
+  state.toolNums = []
 
-  const list = (msgs || []).slice().sort(
-    (a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
+  // v1 的历史条目是 {info, parts}
+  const list = (msgs || []).map((m) => (m.info ? m : { info: m, parts: m.parts ?? m.content ?? [] }))
+    .sort((a, b) => (a.info.time?.created ?? 0) - (b.info.time?.created ?? 0))
 
-  state.sessionTurns = list.filter((m) => (m.role ?? m.type) === 'user').length
+  state.sessionTurns = list.filter((m) => m.info.role === 'user').length
   if (!list.length) showWelcome()
 
   // 刷新后必须把"这一轮还没跑完"这件事也恢复出来。
@@ -740,34 +826,35 @@ async function resync() {
   // 而且那个"25 秒没事件就重同步"的兜底第一行就是 if (!busy) return,永远不会触发。
   let inflight = false
   for (const m of list) {
-    for (const p of (m.content ?? m.parts ?? [])) {
+    state.roles.set(m.info.id, m.info.role)
+    for (const p of m.parts) {
       if (p.type === 'tool' && ['pending', 'running'].includes(p.state?.status)) inflight = true
     }
   }
-  const lastAssistant = [...list].reverse().find((m) => (m.role ?? m.type) === 'assistant')
+  const lastAssistant = [...list].reverse().find((m) => m.info.role === 'assistant')
   // finish 带 tool 说明后面还有步骤;完全没有 finish 说明这条消息还在生成中
-  if (lastAssistant && (!lastAssistant.finish || /tool/i.test(String(lastAssistant.finish)))) {
+  if (lastAssistant && (!lastAssistant.info.finish || /tool/i.test(String(lastAssistant.info.finish)))) {
     inflight = true
   }
 
   for (const m of list) {
-    const role = m.role ?? m.type          // 运行时用 type,schema 里叫 role,两个都认
-    if (role === 'user') {
-      const text = m.text ?? contentText(m.content)
-      if (text) addUser(text)
+    if (m.info.role === 'user') {
+      const text = m.parts.filter((p) => p.type === 'text').map((p) => p.text).join('\n')
+      if (text) { addUser(text); harvestNumbers(text) }
       continue
     }
-    for (const part of (m.content ?? m.parts ?? [])) {
+    for (const part of m.parts) {
       if (part.type === 'text' && part.text) {
-        addMessage('assistant', md(part.text))
+        const el = addMessage('assistant', md(part.text))
+        markProvenance(el)
       } else if (part.type === 'tool') {
         restoreTool(part)
       }
       // reasoning / step-start / step-finish / snapshot 等不渲染
     }
-    if (m.error) {
+    if (m.info.error) {
       addMessage('assistant',
-        `<p class="err">出错:${esc(m.error.message || m.error.name || '未知错误')}</p>`)
+        `<p class="err">出错:${esc(m.info.error.message || m.info.error.data?.message || m.info.error.name || '未知错误')}</p>`)
     }
   }
 
@@ -777,8 +864,8 @@ async function resync() {
   //    已经勾上的全没了,提交上去就是空数组,agent 收到 "Unanswered" 又问一遍。
   //    这个 bug 真实发生过:兜底定时器 25 秒触发一次 resync,把用户勾了一半的答案清空。
   const asArr = (x) => (Array.isArray(x) ? x : x ? [x] : [])
-  const pendingP = asArr(perms)
-  const pendingQs = asArr(questions)
+  const pendingP = asArr(perms).filter((p) => p.sessionID === state.sessionID)
+  const pendingQs = asArr(questions).filter((q) => q.sessionID === state.sessionID)
 
   if (pendingP.length) {
     if (!pendingPerm || pendingPerm.id !== pendingP[0].id) askPermission(pendingP[0])
@@ -795,19 +882,17 @@ async function resync() {
   scroll(true)
 }
 
-/** 用历史里的 ToolPart 重建一张工具卡片(状态机见 ToolState:pending/running/completed/error) */
+/** 用 ToolPart 重建/更新一张工具卡片(状态机见 ToolState:pending/running/completed/error) */
 function restoreTool(part) {
-  // 历史里的 ToolPart 和事件流里的字段名不一样:id 而不是 callID,name 而不是 tool,
-  // error 是 {type,message} 对象而不是字符串。两套都认。
   const callID = part.callID ?? part.id
   const name = part.tool ?? part.name
   const t = ensureTool(callID, name)
   t.name = name || t.name
   t.el.querySelector('.tname').textContent = TOOL_LABEL[t.name] || t.name
-  if (part.state?.input) setToolInput(t, part.state.input)
-  else t.el.querySelector('.in').textContent = part.state?.raw || ''
-  const st = part.state?.status
   const s = part.state ?? {}
+  if (s.input && Object.keys(s.input).length) setToolInput(t, s.input)
+  else if (s.raw) t.el.querySelector('.in').textContent = s.raw
+  const st = s.status
   if (st === 'completed') {
     toolDone(callID, true, typeof s.output === 'string' ? s.output : (contentText(s.content) || stringify(s.structured) || stringify(s.result?.value)))
   } else if (st === 'error') {
@@ -818,7 +903,7 @@ function restoreTool(part) {
 
 /* ---------------- 事件流 ---------------- */
 function connect() {
-  const es = new EventSource('/api/event')
+  const es = new EventSource('/oc/event')
   state.es = es                       // 挂到 state 上,出问题时能在控制台查 readyState
   let wasOpen = false
 
@@ -832,10 +917,11 @@ function connect() {
     state.lastEvent = Date.now()
     let ev
     try { ev = JSON.parse(m.data) } catch { return }
-    const d = ev.data || {}
+    const d = ev.properties || ev.data || {}
     state.lastType = ev.type
     // 全局流会带上所有会话,只处理当前这个
-    if (d.sessionID && state.sessionID && d.sessionID !== state.sessionID) return
+    const sid = d.sessionID ?? d.info?.sessionID ?? d.part?.sessionID
+    if (sid && state.sessionID && sid !== state.sessionID) return
     handle(ev.type, d)
   }
   es.onerror = () => {
@@ -872,92 +958,63 @@ function startWatchdog() {
 
 function handle(type, d) {
   switch (type) {
-    case 'session.next.step.started':
-      state.stepStart = d.timestamp
-      state.tpsLive = 0
-      if (!state.busy) state.turnStart = Date.now()
-      state.phase = 'prefill'
-      setBusy(true)
-      break
-
-    case 'session.next.text.started':
-      ensureText(textKey(d))
-      state.phase = 'gen'
-      break
-
-    case 'session.next.text.delta': {
-      const t = ensureText(textKey(d))
-      t.raw += d.delta
-      state.phase = 'gen'
-      markDirty(t)
-      break
-    }
-
-    case 'session.next.text.ended': {
-      const t = ensureText(textKey(d))
-      t.raw = d.text ?? t.raw
-      t.done = true
-      markDirty(t)
-      break
-    }
-
-    case 'session.next.tool.input.started':
-      ensureTool(d.callID, d.name)
-      state.phase = 'gen'
-      break
-
-    case 'session.next.tool.input.delta': {
-      const t = ensureTool(d.callID)
-      t.argsRaw += d.delta
-      t.dirty = true
-      markDirty(t)
-      break
-    }
-
-    case 'session.next.tool.called': {
-      const t = ensureTool(d.callID, d.tool)
-      t.name = d.tool || t.name
-      t.el.querySelector('.tname').textContent = TOOL_LABEL[t.name] || t.name
-      setToolInput(t, d.input)
-      state.phase = 'tool'
-      scroll()
-      break
-    }
-
-    case 'session.next.tool.success':
-      toolDone(d.callID, true, contentText(d.content) || stringify(d.structured))
-      state.phase = 'prefill'
-      break
-
-    case 'session.next.tool.failed':
-      toolDone(d.callID, false, (d.error && (d.error.message || d.error.name)) || stringify(d.error))
-      state.phase = 'prefill'
-      break
-
-    case 'session.next.step.ended': {
-      const out = d.tokens?.output ?? 0
-      // llama 自己的 tok/s 更准(状态栏那个);这里只在这一轮没采到时兜底
-      if (!state.tpsLive && state.stepStart && out > 0) {
-        const secs = (d.timestamp - state.stepStart) / 1000
-        if (secs > 0.4) $('v-tps').textContent = (out / secs).toFixed(1)
+    case 'message.updated': {
+      const info = d.info || {}
+      state.roles.set(info.id, info.role)
+      if (info.role !== 'assistant') break
+      if (info.tokens && (info.tokens.input || info.tokens.cache?.read)) {
+        // 命中前缀缓存的 token 不计入 input,但它们照样占着上下文窗口
+        updateCtx((info.tokens.input ?? 0) + (info.tokens.cache?.read ?? 0) + (info.tokens.output ?? 0))
+        if (!state.tpsLive && info.time?.created && info.time?.completed && info.tokens.output > 0) {
+          const secs = (info.time.completed - info.time.created) / 1000
+          if (secs > 0.4) $('v-tps').textContent = (info.tokens.output / secs).toFixed(1)
+        }
       }
-      // 命中前缀缓存的 token 不计入 input,但它们照样占着上下文窗口
-      updateCtx((d.tokens?.input ?? 0) + (d.tokens?.cache?.read ?? 0))
+      if (info.error) {
+        addMessage('assistant', `<p class="err">agent 出错:${esc(info.error.message || info.error.data?.message || info.error.name || '未知错误')}</p>`)
+      }
+      // finish 里带 tool 说明还要接着跑工具,那轮还没完,保持 busy;其他 finish 都是这一轮的终点
+      if (info.finish && !/tool/i.test(String(info.finish))) endTurn()
+      break
+    }
 
-      // 解锁必须靠这里,不能只等 session.idle —— 实测 /api/event 上
-      // 根本不发 session.idle,只发 step.ended。只监听 idle 的话按钮会
-      // 永远停在"生成中",第二轮消息发不出去(表现就是"没法连续交互")。
-      // finish 里带 tool 说明还要接着跑工具,那轮还没完,保持 busy。
-      if (!/tool/i.test(String(d.finish ?? ''))) {
-        setBusy(false)
-        document.querySelectorAll('.cursor').forEach((c) => c.remove())
+    case 'message.part.updated': {
+      const p = d.part || {}
+      const role = state.roles.get(p.messageID)
+      if (p.type === 'step-start') {
+        if (!state.busy) { state.turnStart = Date.now(); setBusy(true) }
+        state.phase = 'prefill'
+        state.tpsLive = 0
+      } else if (p.type === 'text') {
+        if (role === 'user') break            // 用户消息我们发送时已经渲染过了
+        const t = ensureText(`${p.messageID}:${p.id}`)
+        t.raw = p.text ?? t.raw
+        state.phase = 'gen'
+        if (p.time?.end) finishText(t); else markDirty(t)
+      } else if (p.type === 'tool') {
+        restoreTool(p)
+        const st = p.state?.status
+        state.phase = (st === 'completed' || st === 'error') ? 'prefill' : 'tool'
+        scroll()
       }
       break
     }
+
+    case 'message.part.delta': {
+      if (d.field !== 'text') break
+      const t = ensureText(`${d.messageID}:${d.partID}`)
+      t.raw += d.delta ?? ''
+      state.phase = 'gen'
+      markDirty(t)
+      break
+    }
+
+    case 'session.status':
+      if (d.status?.type === 'busy' && !state.busy) { state.turnStart = Date.now(); state.phase = 'prefill'; setBusy(true) }
+      break
 
     case 'session.idle':
-      setBusy(false)
-      document.querySelectorAll('.cursor').forEach((c) => c.remove())
+      endTurn()
       break
 
     case 'permission.asked':
@@ -985,15 +1042,20 @@ function handle(type, d) {
       break
 
     // agent 侧出错。不显示的话界面就是一片空白,你只会看到"没反应"
-    case 'session.error':
-    case 'session.next.error': {
+    case 'session.error': {
       const e = d.error ?? d
       addMessage('assistant',
-        `<p class="err">agent 出错:${esc(e.message || e.name || stringify(e) || '未知错误')}</p>`)
-      setBusy(false)
+        `<p class="err">agent 出错:${esc(e.data?.message || e.message || e.name || stringify(e) || '未知错误')}</p>`)
+      endTurn()
       break
     }
   }
+}
+
+function endTurn() {
+  for (const t of state.texts.values()) if (!t.done) finishText(t)
+  setBusy(false)
+  document.querySelectorAll('.cursor').forEach((c) => c.remove())
 }
 
 const stringify = (o) => {
@@ -1002,7 +1064,7 @@ const stringify = (o) => {
   try { const s = JSON.stringify(o, null, 2); return s === '{}' ? '' : s } catch { return String(o) }
 }
 
-/** tool.success 的 content 是 [{type:'text',text}|{type:'file',...}] */
+/** 工具结果的 content 是 [{type:'text',text}|{type:'file',...}] */
 function contentText(content) {
   if (!Array.isArray(content)) return ''
   return content.map((c) => (c && c.type === 'text' ? c.text : `[${c?.type || '?'}]`))
@@ -1021,17 +1083,22 @@ function setBusy(b) {
 
 const LAST_SESSION = 'fish.lastSession'
 
+async function interrupt() {
+  if (!state.sessionID) return
+  try { await api(`/oc/session/${state.sessionID}/abort`, {}) } catch { /* 已经结束了 */ }
+}
+
 async function newSession(silent) {
   // 旧会话还在生成的话先掐掉:换了 sessionID 之后它的事件会被过滤掉,
   // 不主动收尾的话发送按钮会永远卡在"生成中",而且它还在后台烧 token。
-  if (state.sessionID && state.busy) {
-    try { await api(`/api/session/${state.sessionID}/interrupt`, {}) } catch { /* 已经结束了 */ }
-  }
-  const s = await api('/api/session', {})
+  if (state.sessionID && state.busy) await interrupt()
+  const s = await api('/oc/session', {})
   state.sessionID = s.id
   try { localStorage.setItem(LAST_SESSION, s.id) } catch { /* 隐私模式 */ }
   state.texts.clear()
   state.tools.clear()
+  state.roles.clear()
+  state.toolNums = []
   state.sessionTurns = 0
   setBusy(false)
   if (!silent) {
@@ -1051,6 +1118,7 @@ async function send() {
 
   $('welcome')?.parentElement.remove()
   addUser(text)
+  harvestNumbers(text)          // 用户自己写的数字(比如"1.5 倍 IQR")当然不需要计算来源
   box.value = ''
   box.style.height = 'auto'
   state.turnsSent++
@@ -1064,7 +1132,7 @@ async function send() {
   state.phase = 'prefill'
   setBusy(true)
   try {
-    await api(`/api/session/${state.sessionID}/prompt`, { prompt: { text } })
+    await api(`/oc/session/${state.sessionID}/prompt_async`, { parts: [{ type: 'text', text }] })
   } catch (e) { setBusy(false); fail(e) }
 }
 
@@ -1081,8 +1149,8 @@ $('input').addEventListener('input', function () {
 })
 $('btn-new').addEventListener('click', () => newSession(false).catch(fail))
 $('btn-stop').addEventListener('click', async () => {
-  try { await api(`/api/session/${state.sessionID}/interrupt`, {}) } catch (e) { fail(e) }
-  setBusy(false)
+  await interrupt()
+  endTurn()
 })
 
 /* ---------------- 历史会话 ---------------- */
@@ -1093,8 +1161,11 @@ async function showHistory() {
   let list
   try {
     const dir = state.status?.workspace
-    const r = await api(`/api/session?limit=40${dir ? `&directory=${encodeURIComponent(dir)}` : ''}`)
-    list = (Array.isArray(r) ? r : r.items || []).filter((s) => !dir || !s.location?.directory || s.location.directory === dir)
+    const r = await api(`/oc/session?limit=40${dir ? `&directory=${encodeURIComponent(dir)}` : ''}`)
+    list = (Array.isArray(r) ? r : r.items || r.data || []).filter((s) => {
+      const d = s.directory ?? s.location?.directory
+      return !dir || !d || d === dir
+    })
   } catch (e) { body.innerHTML = `<p class="err">${esc(e.message)}</p>`; return }
   body.innerHTML = ''
   if (!list.length) { body.innerHTML = '<div class="empty">还没有历史会话</div>'; return }
@@ -1109,7 +1180,7 @@ async function showHistory() {
     el.addEventListener('click', async () => {
       $('hist-mask').classList.remove('on')
       if (s.id === state.sessionID) return
-      if (state.busy) { try { await api(`/api/session/${state.sessionID}/interrupt`, {}) } catch { /* ok */ } }
+      if (state.busy) await interrupt()
       state.sessionID = s.id
       try { localStorage.setItem(LAST_SESSION, s.id) } catch { /* ok */ }
       setBusy(false)
@@ -1160,7 +1231,7 @@ document.querySelectorAll('.mask').forEach((m) => m.addEventListener('click', (e
   try {
     const last = localStorage.getItem(LAST_SESSION)
     if (last) {
-      await api(`/api/session/${last}`)   // 不存在会抛,落到下面新建
+      await api(`/oc/session/${last}`)   // 不存在会抛,落到下面新建
       state.sessionID = last
       restored = true
     }

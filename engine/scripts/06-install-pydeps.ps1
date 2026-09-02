@@ -28,6 +28,7 @@ $core = @(
     'openpyxl'      # .xlsx
     'matplotlib'    # charts
     'tabulate'      # DataFrame.to_markdown(), renders well in the chat UI
+    'mcp'           # engine\tools\fishkernel.py - the agent's persistent Python session
 )
 
 $optional = @(

@@ -40,8 +40,8 @@ That is the whole design: **the model decides what to compute, Python does the c
 
 ## ✨ Highlights
 
-- 📂 **Drag a file onto the page** — Excel, CSV, JSON, text, parquet, SPSS/SAS/Stata. It writes the parsing code itself, nothing to upload anywhere.
-- 🧮 **Code-verified statistics** — every number traces back to a snippet you can re-run.
+- 📂 **Drag a file onto the page** — Excel, CSV, JSON, text, parquet, SPSS/SAS/Stata. One tool call shows sheets, columns, types and missing values, and loads the table into a persistent Python session.
+- 🧮 **Code-verified statistics** — every number traces back to a snippet you can re-run. Numbers in an answer that never appeared in any computation output get a dotted underline.
 - 📋 **Audit trail** — a side panel keeps every command it ran and every output.
 - 🔒 **Asks before it acts** — no command runs without your approval; the dialog shows the exact command.
 - 💬 **Asks you back** — when a request is ambiguous it pops a multiple-choice question.
@@ -163,20 +163,43 @@ The launcher does the cold turn itself while you are still opening the browser, 
                                    ┌────────────┴─────────────┐
                                    ▼                          ▼
                           ┌────────────────┐        ┌──────────────────┐
-                          │  llama-server  │        │  bash / python   │
-                          │     :8080      │        │  on your machine │
-                          └────────────────┘        └──────────────────┘
+                          │  llama-server  │        │  fishkernel.py   │
+                          │     :8080      │        │  persistent      │
+                          └────────────────┘        │  Python session  │
+                                                    │  (+ bash)        │
+                                                    └──────────────────┘
 ```
 
 The agent runtime is [OpenCode](https://github.com/sst/opencode); inference is
-[llama.cpp](https://github.com/ggml-org/llama.cpp). Fish.AI is the web layer plus the
-behaviour rules in [`app/workspace/AGENTS.md`](app/workspace/AGENTS.md), which are written
-against measured model weaknesses — always compute in Python, never skip the derivation,
-never invent a term you are unsure of.
+[llama.cpp](https://github.com/ggml-org/llama.cpp). Fish.AI is the web layer, the
+harness in [`app/workspace/opencode.json`](app/workspace/opencode.json) (a data-analysis
+system prompt instead of OpenCode's coding-agent one, and a trimmed tool set), the
+behaviour rules in [`app/workspace/AGENTS.md`](app/workspace/AGENTS.md), and
+[`engine/tools/fishkernel.py`](engine/tools/fishkernel.py).
 
-Because the agent runs `bash` directly on your machine (not in a sandbox), it can answer
-questions about files already on disk without any upload — and that is exactly why every
-command needs approval first.
+**The kernel is what makes a 3B-active model workable.** It is a small MCP server that
+gives the agent four tools: `python_inspect_file` (sheets, columns, dtypes, missing values,
+first rows — and the table is now `df`), `python_run` (code in a session where variables
+persist, so each step is a couple of lines rather than a script that re-reads the file),
+`python_list_files`, `python_reset`. Multi-line code just works; a hung computation is
+killed and the session restarted. Every `python_run` still needs your approval, and the
+dialog shows the code.
+
+The rules in `AGENTS.md` are written against measured model weaknesses — always compute
+in Python, never skip the derivation, never invent a term you are unsure of.
+
+**Evaluation.** `eval/run_eval.py` drives the agent through ten data questions on a
+generated dataset with pandas-computed ground truth, grades the answers mechanically, and
+checks that every number the agent reports appears in a tool output. Reports land in
+`eval/results/`. Run it with llama-server up:
+
+```powershell
+python eval\run_eval.py --label mine --config app\workspace
+```
+
+It starts its own `opencode serve` on port 4097 with a throwaway copy of the config, so
+your sessions are untouched. Use `--config eval\configs\baseline` to compare against the
+pre-kernel setup.
 
 ## ❄️ Snowflake (optional · 🚧 TODO)
 
@@ -209,6 +232,7 @@ Treat it as a starting point, not a finished feature. See
 | A command "succeeded" with no output | On Windows, `python -c` with embedded newlines silently produces nothing. Use one line, or write a `.py` file. |
 | Answers come back empty | Thinking mode is on. `03-start-server.ps1` passes `--reasoning off` for models that need it. |
 | `UnicodeDecodeError: 'gbk'` while reading a file | `start.ps1` sets `PYTHONUTF8=1` for the agent; if you launched things by hand, set it yourself. |
+| Agent uses `bash python -c ...` instead of `python_run` | The Python kernel did not connect. `python -c "import mcp"` must work (setup installs it); see `logs\opencode.log`. |
 
 Full list by symptom: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
@@ -219,9 +243,11 @@ install.ps1            one-line bootstrap: git clone + setup
 setup.ps1  Setup.cmd   one-shot install (Setup.cmd = double-click version)
 start.ps1  Fish.AI.cmd one-shot run     (Fish.AI.cmd = double-click version)
 app/                   web UI + API proxy + file API + warm-up   -> app/README.md
-  workspace/           your data files; AGENTS.md = agent rules; opencode.json = agent config
+  workspace/           your data files; AGENTS.md = agent rules; opencode.json = harness config
 engine/                llama.cpp, model downloads
   scripts/             numbered install/verify steps, runnable individually
+  tools/fishkernel.py  the agent's persistent Python session (MCP server)
+eval/                  run_eval.py + make_data.py; results/ holds past reports
 logs/                  runtime logs from start.ps1 (git-ignored)
 snowflake/             optional read-only Snowflake auditing  -> snowflake/README.md
 ```

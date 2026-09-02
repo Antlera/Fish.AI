@@ -36,6 +36,10 @@ app/workspace/*
 # ---- Runtime logs written by start.ps1 ----
 logs/
 
+# ---- Evaluation scratch (generated data + throwaway agent workspaces); results/ is tracked ----
+eval/.run/
+eval/.data/
+
 # ---- Scratch ----
 *.orig
 *.bak

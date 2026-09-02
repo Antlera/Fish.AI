@@ -141,6 +141,23 @@ finished, or started with `-NoWarmup`.
 A longer `AGENTS.md` directly lengthens the cold prefill. Restarting `llama-server`
 empties the cache; the warm-up runs again on the next `start.ps1`.
 
+## The agent runs `bash` with `python -c` instead of the Python tools
+
+The Python kernel (`engine\tools\fishkernel.py`, an MCP server) is not connected, so the
+model only has `bash`. Check, in order:
+
+1. `python -c "import mcp"` in a terminal. `setup.ps1` installs the `mcp` package; if it
+   is missing, `python -m pip install mcp`.
+2. `opencode --version` is 1.18.26 or newer. Older versions ignore the per-agent tool
+   list and hand the model every built-in tool. `.\setup.ps1` upgrades it.
+3. `logs\opencode.log` for `mcp` errors. The kernel is started with the workspace as
+   its working directory and the command `python ../../engine/tools/fishkernel.py`, so
+   `python` must be on PATH for the agent process.
+
+Also note that Fish.AI talks to OpenCode's **v1** API (`/session`, `/event`). The v2 API
+(`/api/...`) in 1.18.x does not give MCP tools to the model at all - a UI that switches
+back to it will silently lose the kernel.
+
 ## UnicodeDecodeError: 'gbk' codec can't decode byte ... (in the agent's Python)
 
 On a Chinese/Japanese/Korean Windows, Python's `open()` defaults to the ANSI codepage.
