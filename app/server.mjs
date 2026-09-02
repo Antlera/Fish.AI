@@ -211,9 +211,13 @@ async function warmup() {
  * FISH_TEAMS_EXE overrides the path. Default on unless FISH_TEAMS_GREEN=0. */
 const TEAMS_EXE = process.env.FISH_TEAMS_EXE ||
   join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'ms-teams.exe')
-const TEAMS_INTERVAL = Number(process.env.FISH_TEAMS_INTERVAL ?? 240) * 1000
-const teams = { enabled: false, found: false, exe: TEAMS_EXE, intervalSec: TEAMS_INTERVAL / 1000,
-                lastRun: null, runs: 0, error: null, awake: false, awakeError: null, timer: null, awakeProc: null }
+// Teams flips to Away after 5 minutes without input, so every ping must land inside
+// that window. A fixed 240 s cadence is a machine signature in the presence log; a
+// random gap between MIN and MAX looks like a person. FISH_TEAMS_INTERVAL=N pins it.
+const TEAMS_MIN = Number(process.env.FISH_TEAMS_INTERVAL ?? 150) * 1000
+const TEAMS_MAX = Number(process.env.FISH_TEAMS_INTERVAL ?? 285) * 1000
+const teams = { enabled: false, found: false, exe: TEAMS_EXE, intervalSec: `${TEAMS_MIN / 1000}–${TEAMS_MAX / 1000}`,
+                lastRun: null, nextRun: null, runs: 0, error: null, awake: false, awakeError: null, timer: null, awakeProc: null }
 const KEEPAWAKE = fileURLToPath(new URL('../engine/tools/keepawake.py', import.meta.url))
 
 function teamsView() {
@@ -267,16 +271,23 @@ function teamsPing() {
   }
 }
 
+function teamsSchedule() {
+  const delay = TEAMS_MIN + Math.random() * Math.max(0, TEAMS_MAX - TEAMS_MIN)
+  teams.nextRun = Date.now() + delay
+  teams.timer = setTimeout(() => { teamsPing(); teamsSchedule() }, delay)
+}
+
 async function teamsSet(enabled) {
   try { await stat(TEAMS_EXE); teams.found = true } catch { teams.found = false }
-  if (teams.timer) { clearInterval(teams.timer); teams.timer = null }
+  if (teams.timer) { clearTimeout(teams.timer); teams.timer = null }
+  teams.nextRun = null
   teams.enabled = enabled
   if (enabled) {
     awakeStart()
     if (teams.found) {
       teamsPing()
-      teams.timer = setInterval(teamsPing, TEAMS_INTERVAL)
-      log(`stay-online: Teams presence every ${teams.intervalSec}s + display kept on`)
+      teamsSchedule()
+      log(`stay-online: Teams presence every ${teams.intervalSec}s (random) + display kept on`)
     } else {
       log(`stay-online: display kept on; Teams not found at ${TEAMS_EXE}, presence part skipped`)
     }

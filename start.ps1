@@ -21,8 +21,8 @@ param(
     # Skip the start-up warm-up turn (it costs one short generation).
     [switch]$NoWarmup,
     # Do not keep Microsoft Teams' status "Available" while Fish.AI runs
-    # (on by default: it re-runs `ms-teams.exe --set-presence-to-available` every 4 min;
-    # the button in the page toggles it too).
+    # (on by default: it re-runs `ms-teams.exe --set-presence-to-available` every
+    # 2.5-4.5 min at random and keeps the display on; the button in the page toggles it too).
     [switch]$NoTeamsGreen
 )
 

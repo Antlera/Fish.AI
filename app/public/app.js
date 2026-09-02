@@ -638,11 +638,11 @@ function renderTeams(t) {
   const screen = t.enabled ? (t.awake ? '屏幕保持点亮、不会因空闲锁屏' : `屏幕保持点亮:未生效${t.awakeError ? `(${t.awakeError})` : ''}`) : ''
   if (t.enabled) {
     const presence = t.found
-      ? `每 ${t.intervalSec} 秒让 Teams 保持"有空"(上次 ${t.lastRun ? `${Math.round((Date.now() - t.lastRun) / 1000)} 秒前` : '还没'},共 ${t.runs} 次${t.error ? `,出错:${t.error}` : ''})`
+      ? `每 ${t.intervalSec} 秒(随机)让 Teams 保持"有空"(上次 ${t.lastRun ? `${Math.round((Date.now() - t.lastRun) / 1000)} 秒前` : '还没'},下次 ${t.nextRun ? `${Math.max(0, Math.round((t.nextRun - Date.now()) / 1000))} 秒后` : '—'},共 ${t.runs} 次${t.error ? `,出错:${t.error}` : ''})`
       : `没找到 Teams(${t.exe}),只保持屏幕`
     b.title = `开着:${presence};${screen}。点击关闭。`
   } else {
-    b.title = `点击开启:每 4 分钟让 Teams 保持"有空",并让屏幕保持点亮不锁屏${t.found ? '' : '(这台机器没找到 Teams,只有屏幕这一半会生效)'}`
+    b.title = `点击开启:每 2.5–4.5 分钟(随机)让 Teams 保持"有空",并让屏幕保持点亮不锁屏${t.found ? '' : '(这台机器没找到 Teams,只有屏幕这一半会生效)'}`
   }
 }
 $('btn-teams').addEventListener('click', async () => {
