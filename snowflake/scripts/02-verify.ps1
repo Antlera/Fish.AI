@@ -69,7 +69,8 @@ if (-not (Test-Path $conn)) {
 
 # 3. does OpenCode know about this MCP server
 Write-Host ("{0,-34}" -f "OpenCode config valid") -NoNewline
-$oc = Join-Path $env:USERPROFILE '.config\opencode\opencode.json'
+# Fish.AI's project-level OpenCode config (repo root\app\workspace\opencode.json)
+$oc = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'app\workspace\opencode.json'
 if (-not (Test-Path $oc)) {
     Write-Host "FAIL" -ForegroundColor Red -NoNewline; Write-Host "  $oc not found" -ForegroundColor Yellow; $fail = $true
 } else {

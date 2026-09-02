@@ -41,7 +41,8 @@ from here.
 pwsh snowflake\scripts\01-install-mcp.ps1
 ```
 
-Installs uv + snowflake-labs-mcp and merges the MCP block into your `opencode.json`.
+Installs uv + snowflake-labs-mcp and merges the MCP block into `app\workspace\opencode.json`
+(Fish.AI's project-level OpenCode config).
 Then:
 
 1. **Run `sql\01-guardrails.sql` as ACCOUNTADMIN.** Edit the `-- CONFIGURE:` lines at the

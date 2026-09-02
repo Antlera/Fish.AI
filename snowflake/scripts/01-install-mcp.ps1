@@ -5,8 +5,9 @@
   Optional. Only needed if you want the agent to query Snowflake; the local file
   workflow does not use any of this.
 
-  Prerequisite: engine\scripts\04-install-agent.ps1 has already created
-  ~\.config\opencode\opencode.json.
+  The MCP block is merged into app\workspace\opencode.json - Fish.AI's project-level
+  OpenCode config (it no longer writes ~\.config\opencode). OpenCode picks it up because
+  start.ps1 runs the agent with app\workspace as its working directory.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -33,7 +34,7 @@ Write-Host "Warming up snowflake-labs-mcp (first run downloads a lot)..." -Foreg
 # --- Config files ---
 $sfDir  = Join-Path $env:USERPROFILE '.snowflake'
 $cfgDir = Join-Path $env:USERPROFILE '.config\snowflake'
-$ocFile = Join-Path $env:USERPROFILE '.config\opencode\opencode.json'
+$ocFile = Join-Path $Root 'app\workspace\opencode.json'
 New-Item -ItemType Directory -Force -Path $sfDir, $cfgDir | Out-Null
 
 Copy-Item (Join-Path $Root 'snowflake\config\service_config.yaml') $cfgDir -Force
@@ -49,7 +50,7 @@ if (Test-Path $connTarget) {
 }
 
 # --- Merge the MCP block into the existing opencode.json ---
-if (-not (Test-Path $ocFile)) { throw "$ocFile not found. Run engine\scripts\04-install-agent.ps1 first." }
+if (-not (Test-Path $ocFile)) { throw "$ocFile not found - the checkout is incomplete (git pull?)" }
 
 $cfg = Get-Content $ocFile -Raw | ConvertFrom-Json
 if ($cfg.mcp -and $cfg.mcp.snowflake) {
