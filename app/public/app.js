@@ -838,9 +838,20 @@ function connect() {
     if (d.sessionID && state.sessionID && d.sessionID !== state.sessionID) return
     handle(ev.type, d)
   }
-  es.onerror = () => { /* EventSource 自己会重连,重连后 onopen 里 resync */ }
+  es.onerror = () => {
+    // 网络断开时 EventSource 会自己重连。但如果服务端回的是 502(opencode 还没起来
+    // 或者刚重启),按规范它会直接进入 CLOSED,永远不再重试 —— 页面就再也收不到
+    // 任何事件,表现是"一直在读取提示"。这时要自己重新建一条。
+    if (es.readyState === EventSource.CLOSED) {
+      es.close()
+      setTimeout(connect, 3000)
+    }
+  }
+}
 
-  // 兜底:正在生成却超过 25 秒一个事件都没有,说明流悄悄断了(浏览器不一定报错)。
+/* 只装一次的兜底,和事件流的连接/重连无关 */
+function startWatchdog() {
+  // 正在生成却超过 25 秒一个事件都没有,说明流悄悄断了(浏览器不一定报错)。
   // 直接从服务端重新拉状态,而不是干等 —— 这类"卡住"靠猜是查不出来的。
   // 例外:prefill 阶段本来就没有事件(模型在读提示,几十秒很正常),这时看 llama 是否在算。
   setInterval(() => {
@@ -1138,6 +1149,11 @@ document.querySelectorAll('.mask').forEach((m) => m.addEventListener('click', (e
     await refreshStatus()
   }
 
+  // 事件流和兜底先连上,不管会话建不建得成 —— 早先的版本在建会话失败时直接 return,
+  // 事件流从没连过,之后用户照样能发消息,但权限弹窗和输出永远到不了页面。
+  connect()
+  startWatchdog()
+
   // 优先接回上次的会话 —— 刷新页面不该丢掉对话,也不该把挂起的权限请求丢成孤儿。
   // 会话在 opencode 服务端是持久的,这里只是把 id 记在本地。
   let restored = false
@@ -1150,10 +1166,11 @@ document.querySelectorAll('.mask').forEach((m) => m.addEventListener('click', (e
     }
   } catch { /* 会话没了,新建 */ }
 
-  if (!restored) {
-    try { await newSession(true) } catch (e) { return fail(e) }
+  if (restored) { await resync(); return }
+  for (let attempt = 0; ; attempt++) {
+    try { await newSession(true); break } catch (e) {
+      if (attempt === 0) fail(e)
+      await new Promise((r) => setTimeout(r, 3000))
+    }
   }
-
-  connect()
-  if (restored) await resync()
 })()
