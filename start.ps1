@@ -19,7 +19,11 @@ param(
     [int]$Port = 8090,
     [switch]$NoBrowser,
     # Skip the start-up warm-up turn (it costs one short generation).
-    [switch]$NoWarmup
+    [switch]$NoWarmup,
+    # Do not keep Microsoft Teams' status "Available" while Fish.AI runs
+    # (on by default: it re-runs `ms-teams.exe --set-presence-to-available` every 4 min;
+    # the button in the page toggles it too).
+    [switch]$NoTeamsGreen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,6 +114,7 @@ try {
     $env:FISH_LLAMA_LOG    = $llamaLog
     $env:FISH_OPENCODE_LOG = $ocLog
     if ($NoWarmup) { $env:FISH_NO_WARMUP = '1' } else { Remove-Item Env:FISH_NO_WARMUP -ErrorAction SilentlyContinue }
+    $env:FISH_TEAMS_GREEN = if ($NoTeamsGreen) { '0' } else { '1' }
     $nodeExe = (Get-Command node -ErrorAction Stop).Source
     $webP = Start-Process -FilePath $nodeExe -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $webLog -RedirectStandardError "$webLog.err" `

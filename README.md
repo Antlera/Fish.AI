@@ -46,6 +46,7 @@ That is the whole design: **the model decides what to compute, Python does the c
 - 🔒 **Asks before it acts** — no command runs without your approval; the dialog shows the exact command.
 - 💬 **Asks you back** — when a request is ambiguous it pops a multiple-choice question.
 - ⚡ **Warm from the start** — the launcher pre-fills the model's prompt once, so the first real question answers in seconds instead of two minutes.
+- 🟢 **Keeps Teams "Available"** while it runs — re-asserts your presence every 4 minutes via `ms-teams.exe --set-presence-to-available` (no admin rights, no mouse jiggler), so reading a long answer does not flip you to Away. Toggle with the *Teams* button, or start with `-NoTeamsGreen`.
 - 🖱️ **One line to install, one click to run** — or `.\setup.ps1` then `.\start.ps1` if you prefer a terminal.
 
 ## 📦 Install

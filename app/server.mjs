@@ -67,7 +67,7 @@ function parseMetrics(text) {
 
 /** Status bar: fetch both backends' health at once; one being down must not hide the other. */
 async function status() {
-  const out = { llama: { up: false }, opencode: { up: false }, warm: warmView(), workspace: WORKSPACE }
+  const out = { llama: { up: false }, opencode: { up: false }, warm: warmView(), teams: teamsView(), workspace: WORKSPACE }
   const T = (ms) => ({ signal: AbortSignal.timeout(ms) })
   await Promise.all([
     (async () => {
@@ -201,6 +201,56 @@ async function warmup() {
     const secs = ((warm.endedAt - warm.startedAt) / 1000).toFixed(0)
     log(`warm-up: ${warm.state} in ${secs}s` + (warm.promptTokens ? ` (${warm.promptTokens} prompt tokens now cached)` : '') + (warm.error ? ` - ${warm.error}` : ''))
   }
+}
+
+/* ---------------- keep Teams green ----------------
+ * While the user reads a long answer nothing moves the mouse, and Teams flips to
+ * "Away". The new Teams accepts `ms-teams.exe --set-presence-to-available` on its
+ * command line (no admin rights needed), so we re-assert it every few minutes.
+ * The exe is the App Execution Alias under %LOCALAPPDATA%\Microsoft\WindowsApps;
+ * FISH_TEAMS_EXE overrides the path. Default on unless FISH_TEAMS_GREEN=0. */
+const TEAMS_EXE = process.env.FISH_TEAMS_EXE ||
+  join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'ms-teams.exe')
+const TEAMS_INTERVAL = Number(process.env.FISH_TEAMS_INTERVAL ?? 240) * 1000
+const teams = { enabled: false, found: false, exe: TEAMS_EXE, intervalSec: TEAMS_INTERVAL / 1000,
+                lastRun: null, runs: 0, error: null, timer: null }
+
+function teamsView() {
+  const { timer, ...v } = teams
+  return v
+}
+
+function teamsPing() {
+  if (!teams.found) return
+  try {
+    // `start` is what the PowerShell one-liner in the blog post does under the hood:
+    // launch the alias detached, do not wait, no console window.
+    const child = spawn('cmd.exe', ['/d', '/c', 'start', '""', `"${TEAMS_EXE}"`, '--set-presence-to-available'],
+                        { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true })
+    child.on('error', (e) => { teams.error = e.message })
+    child.unref()
+    teams.lastRun = Date.now()
+    teams.runs++
+    teams.error = null
+  } catch (e) {
+    teams.error = e.message
+  }
+}
+
+async function teamsSet(enabled) {
+  try { await stat(TEAMS_EXE); teams.found = true } catch { teams.found = false }
+  if (teams.timer) { clearInterval(teams.timer); teams.timer = null }
+  teams.enabled = enabled && teams.found
+  if (teams.enabled) {
+    teamsPing()
+    teams.timer = setInterval(teamsPing, TEAMS_INTERVAL)
+    log(`teams: keeping status green every ${teams.intervalSec}s`)
+  } else if (enabled && !teams.found) {
+    log(`teams: not found at ${TEAMS_EXE}, keep-green disabled`)
+  } else {
+    log('teams: keep-green off')
+  }
+  return teamsView()
 }
 
 /* ---------------- workspace files ---------------- */
@@ -381,6 +431,13 @@ http.createServer(async (req, res) => {
     if (p === '/fish/files' && req.method === 'GET')   return json(res, 200, await listFiles())
     if (p === '/fish/upload' && req.method === 'POST') return await upload(req, res, url)
     if (p === '/fish/open-folder' && req.method === 'POST') { openFolder(); return json(res, 200, { ok: true }) }
+    if (p === '/fish/teams' && req.method === 'GET') return json(res, 200, teamsView())
+    if (p === '/fish/teams' && req.method === 'POST') {
+      const chunks = []
+      for await (const c of req) chunks.push(c)
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      return json(res, 200, await teamsSet(body.enabled !== false))
+    }
     if (p === '/fish/logs') {
       const which = url.searchParams.get('which') === 'opencode' ? 'opencode' : 'llama'
       return json(res, 200, { which, text: await tailLog(which) })
@@ -410,4 +467,5 @@ http.createServer(async (req, res) => {
   log(`  llama    : ${LLAMA}`)
   log(`  workspace: ${WORKSPACE}`)
   warmup().catch((e) => { warm.state = 'failed'; warm.error = e.message })
+  teamsSet(process.env.FISH_TEAMS_GREEN !== '0').catch((e) => { teams.error = e.message })
 })

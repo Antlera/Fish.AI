@@ -576,6 +576,7 @@ async function refreshStatus() {
   if (s.llama.model) $('v-model').textContent = s.llama.model.replace(/\.gguf$/i, '').replace(/-UD-.*$/, '').replace(/-Q\d.*$/, '')
   if (s.llama.ctx) state.ctxWindow = s.llama.ctx
   if (s.workspace) $('ws-path').textContent = s.workspace
+  renderTeams(s.teams)
   // llama's gauge is live: non-zero only while generating. Remember the last reading
   // so the pill keeps showing it after the turn ends.
   if (s.llama.tps) { state.tpsLive = s.llama.tps; $('v-tps').textContent = s.llama.tps.toFixed(1) }
@@ -623,6 +624,35 @@ async function refreshStatus() {
     } else banner(null)   // skipped / cancelled:用户已经在用了,不打扰
   }
 }
+
+/* ---------------- Teams 保持在线 ----------------
+ * 看一个长回答的时候鼠标不动,Teams 就变成"离开"。server.mjs 每 4 分钟跑一次
+ * `ms-teams.exe --set-presence-to-available`(新版 Teams 支持,不需要管理员权限)。
+ * 这里只是开关和状态显示。 */
+function renderTeams(t) {
+  const b = $('btn-teams'), dot = $('d-teams')
+  if (!t) return
+  b.classList.toggle('on', !!t.enabled)
+  b.classList.toggle('na', !t.found)
+  dot.className = `dot ${t.enabled ? 'up' : ''}`
+  if (!t.found) {
+    b.title = `没找到 Teams(${t.exe})。装了新版 Teams 之后重启 Fish.AI 即可;也可以用 FISH_TEAMS_EXE 指定路径。`
+  } else if (t.enabled) {
+    const ago = t.lastRun ? `${Math.round((Date.now() - t.lastRun) / 1000)} 秒前` : '还没'
+    b.title = `正在每 ${t.intervalSec} 秒让 Teams 保持"有空";上次 ${ago},共 ${t.runs} 次${t.error ? `;出错:${t.error}` : ''}。点击关闭。`
+  } else {
+    b.title = '点击开启:每 4 分钟让 Teams 保持"有空",不用去动鼠标'
+  }
+}
+$('btn-teams').addEventListener('click', async () => {
+  const t = state.status?.teams
+  if (t && !t.found) { alert($('btn-teams').title); return }
+  try {
+    const r = await api('/fish/teams', { enabled: !(t && t.enabled) })
+    if (state.status) state.status.teams = r
+    renderTeams(r)
+  } catch (e) { fail(e) }
+})
 
 async function showLogs(which) {
   $('log-title').textContent = which === 'opencode' ? 'agent 运行时日志 (opencode)' : '推理引擎日志 (llama-server)'
