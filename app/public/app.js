@@ -1131,6 +1131,13 @@ document.querySelectorAll('.mask').forEach((m) => m.addEventListener('click', (e
   loadFiles()
   setInterval(loadFiles, 20000)
 
+  // 浏览器是先于引擎打开的(启动时故意这样,横幅会显示进度)。
+  // opencode 没起来之前碰它的接口只会得到 502,所以先等。
+  while (!state.status?.opencode?.up) {
+    await new Promise((r) => setTimeout(r, 2000))
+    await refreshStatus()
+  }
+
   // 优先接回上次的会话 —— 刷新页面不该丢掉对话,也不该把挂起的权限请求丢成孤儿。
   // 会话在 opencode 服务端是持久的,这里只是把 id 记在本地。
   let restored = false
