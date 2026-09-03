@@ -59,11 +59,13 @@ Open PowerShell and paste:
 irm https://raw.githubusercontent.com/Antlera/Fish.AI/main/install.ps1 | iex
 ```
 
-That is the whole install. It clones the repo into `~\Fish.AI` (installing git first if
-needed) and runs `setup.ps1`, which installs **Python and Node.js via winget if they are
-missing**, then fetches llama.cpp, the model weights, the agent runtime and the Python
-data stack, and puts a **Fish.AI** shortcut on your desktop. Everything is re-runnable
-and skips whatever is already done. Expect 10–30 minutes, most of it the 9.4 GB download.
+That is the whole install. It fetches the code into `~\Fish.AI` (with git if you have
+it, otherwise as a plain zip download — no git required) and runs `setup.ps1`, which
+installs **Python and Node.js via winget if they are missing**, then fetches llama.cpp,
+the model weights, the agent runtime and the Python data stack, and puts a **Fish.AI**
+shortcut on your desktop. Everything is re-runnable: the same line later updates an
+existing install and skips whatever is already done. Expect 10–30 minutes, most of it
+the 9.4 GB download.
 
 The one thing it will not install for you is the NVIDIA driver — that needs a reboot and
 the right variant for your card, so it stays manual.
@@ -88,7 +90,16 @@ Options for `setup.ps1` (or as environment variables for the one-liner, e.g.
 | `-Model bonsai8b` | smaller machine: 1.1 GB, much faster, noticeably less accurate |
 | `-NoAutoInstall` | report missing prerequisites instead of installing them |
 | `-NoShortcut` | do not create the desktop shortcut |
-| `$env:FISH_DIR` | one-liner only: where to clone (default `~\Fish.AI`) |
+| `$env:FISH_DIR` | one-liner only: where to put it (default `~\Fish.AI`) |
+| `$env:FISH_NO_GIT = '1'` | one-liner only: always use the zip download, never git |
+| `$env:FISH_INSTALL_ONLY = '1'` | one-liner only: fetch or update the code, skip `setup.ps1` |
+
+No git? Nothing to do — the one-liner downloads the repository as a zip from GitHub over
+HTTPS and unpacks it. Updating works the same way: re-run the line, new files overwrite
+old ones, and your data in `app\workspace`, the models and the binaries stay put.
+You can also do it by hand: download
+<https://github.com/Antlera/Fish.AI/archive/refs/heads/main.zip>, unzip, double-click
+`Setup.cmd`.
 
 Fish.AI does not touch `~\.config\opencode`. Its agent config lives in
 `app\workspace\opencode.json`, so an existing OpenCode setup is left alone.
