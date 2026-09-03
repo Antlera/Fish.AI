@@ -109,6 +109,13 @@ You can also do it by hand: download
 
 Fish.AI does not touch `~\.config\opencode`. Its agent config lives in
 `app\workspace\opencode.json`, so an existing OpenCode setup is left alone.
+
+**Managed / corporate machine, no admin rights?** That is fine. If `winget` cannot
+install Python or Node.js (policy-blocked installs return an error and install nothing),
+setup unpacks the official portable builds into `engine\python` and `engine\node` and
+uses those — nothing is installed system-wide, no admin prompt. `.\setup.ps1 -Portable`
+skips the winget attempt altogether. A locked execution policy is not a problem either:
+the `.cmd` launchers and the one-liner run scripts with a per-process bypass.
 </details>
 
 ## 🚀 Quick Start

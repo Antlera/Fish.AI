@@ -28,14 +28,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
-$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-            [Environment]::GetEnvironmentVariable('Path','User')
-
-# The agent runs python on this machine. On a Chinese/Japanese/Korean Windows the
-# default codec is the ANSI codepage, so any non-ASCII byte in a data file makes
-# open() throw UnicodeDecodeError. Every child process inherits this.
-$env:PYTHONUTF8 = '1'
-$env:PYTHONIOENCODING = 'utf-8'
+# PATH refresh, portable Python/Node in engine\ first, PYTHONUTF8=1 for the agent's
+# Python (non-English Windows defaults to the ANSI codepage). Every child inherits it.
+. (Join-Path $Root 'engine\scripts\_env.ps1')
 
 $Logs = Join-Path $Root 'logs'
 New-Item -ItemType Directory -Force -Path $Logs | Out-Null
@@ -94,10 +89,8 @@ try {
     if (Test-Port 4096 '/api/health') {
         Write-Host ("  {0,-22} already running" -f 'agent     :4096') -ForegroundColor DarkGray
     } else {
-        # `opencode` on PATH is an npm .cmd shim; Start-Process cannot launch it
-        # ("%1 is not a valid Win32 application"). Use the real exe.
-        $ocExe = Join-Path (& npm root -g) 'opencode-ai\bin\opencode.exe'
-        if (-not (Test-Path $ocExe)) { throw "opencode not installed. Run .\setup.ps1 first." }
+        $ocExe = Find-OpenCodeExe
+        if (-not $ocExe) { throw "opencode not installed. Run .\setup.ps1 first." }
         if (-not (Test-Path (Join-Path $ws 'opencode.json'))) {
             throw "app\workspace\opencode.json is missing - it tells opencode to use the local model. Re-run .\setup.ps1 or git pull."
         }

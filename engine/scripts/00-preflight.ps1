@@ -2,7 +2,9 @@
 <#
   00-preflight.ps1 - Check the machine, and with -AutoInstall fix what can be fixed.
 
-  Auto-installable (via winget): Python, Node.js, and the PowerShell execution policy.
+  Auto-installable: Python and Node.js. First via winget; if that is blocked (managed
+  corporate machines return an error code and install nothing) they are unpacked as
+  portable builds inside engine\ by 07-install-portable.ps1 - no admin, no installer.
   Not auto-installable: the NVIDIA driver (needs a reboot and the right variant for your
   card) and anything about how much RAM/VRAM/disk you have.
 
@@ -14,25 +16,24 @@
 
 param(
     # Install missing prerequisites instead of just reporting them.
-    [switch]$AutoInstall
+    [switch]$AutoInstall,
+    # Skip winget and go straight to the portable builds (managed machines).
+    [switch]$Portable
 )
 
 $ErrorActionPreference = 'Continue'
 $script:Failed = $false
+. (Join-Path $PSScriptRoot '_env.ps1')
+$Portable7 = Join-Path $PSScriptRoot '07-install-portable.ps1'
 
-# winget installs do not refresh PATH in an already-running process.
-function Sync-Path {
-    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                [Environment]::GetEnvironmentVariable('Path','User')
-}
-Sync-Path
+function Sync-Env { . (Join-Path $PSScriptRoot '_env.ps1') }
 
 function Invoke-Winget {
     param([string]$Id)
-    Write-Host "installing $Id ..." -ForegroundColor Cyan -NoNewline
+    Write-Host "installing $Id via winget ..." -ForegroundColor Cyan -NoNewline
     $out = & winget install --id $Id -e --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1
     $code = $LASTEXITCODE
-    Sync-Path
+    Sync-Env
 
     # Deliberately do NOT interpret winget's exit code or output text. Both are
     # localised and it returns non-zero for harmless cases such as "already installed,
@@ -41,9 +42,24 @@ function Invoke-Winget {
     if ($code -eq 0) {
         Write-Host " done" -ForegroundColor Green
     } else {
-        Write-Host " winget exit $code - re-checking anyway" -ForegroundColor DarkYellow
-        $out | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        Write-Host (" winget exit {0} (0x{1:X8}) - re-checking anyway" -f $code, ($code -band 0xFFFFFFFF)) -ForegroundColor DarkYellow
+        $out | Where-Object { "$_".Trim() } | Select-Object -Last 3 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
+    return $true
+}
+
+# Fix for Python / Node: winget, then the portable build if winget did not deliver.
+function Install-Runtime {
+    param([string]$WingetId, [string]$PortableSwitch, [scriptblock]$Works)
+    if (-not $Portable -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+        $null = Invoke-Winget $WingetId
+        if (& $Works) { return $true }
+        Write-Host "  winget did not deliver a working install (blocked by policy?) - using the portable build" -ForegroundColor DarkYellow
+    }
+    Write-Host "  portable install ..." -ForegroundColor Cyan
+    $splat = @{ $PortableSwitch = $true }
+    & $Portable7 @splat
+    Sync-Env
     return $true
 }
 
@@ -92,7 +108,7 @@ function Check {
 }
 
 Write-Host "`n=== preflight ===" -ForegroundColor Cyan
-if ($AutoInstall) { Write-Host "(auto-install enabled)`n" -ForegroundColor DarkGray } else { Write-Host "" }
+if ($AutoInstall) { Write-Host "(auto-install enabled$(if ($Portable) { ', portable builds' }))`n" -ForegroundColor DarkGray } else { Write-Host "" }
 
 Check "NVIDIA driver / nvidia-smi" {
     $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -132,34 +148,47 @@ Check "CPU cores" {
     @{ ok = ($n -ge 8); warn = ($n -lt 8); detail = "$n logical" }
 } $null "Few cores noticeably slow the CPU-side MoE expert compute; expect lower tok/s"
 
+$pythonWorks = {
+    $v = & python --version 2>&1
+    ($v -match 'Python 3\.(\d+)') -and ([int]$Matches[1] -ge 10)
+}
 Check "Python 3.10+" {
     $v = & python --version 2>&1
     if ($v -notmatch 'Python (\d+)\.(\d+)') { return @{ ok = $false; detail = "not found" } }
     $ok = ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 10)
-    @{ ok = $ok; detail = "$v" }
-} { Invoke-Winget 'Python.Python.3.12' } "winget install Python.Python.3.12"
+    $where = (Get-Command python -ErrorAction SilentlyContinue).Source
+    @{ ok = $ok; detail = "$v  ($where)" }
+} { Install-Runtime 'Python.Python.3.12' 'Python' $pythonWorks } "winget install Python.Python.3.12, or pwsh engine\scripts\07-install-portable.ps1 -Python (no admin needed)"
 
+$nodeWorks = {
+    $v = & node --version 2>&1
+    ($v -match '^v(\d+)') -and ([int]$Matches[1] -ge 18)
+}
 Check "Node.js 18+" {
     $v = & node --version 2>&1
     if ($v -notmatch 'v(\d+)') { return @{ ok = $false; detail = "not found" } }
-    @{ ok = ([int]$Matches[1] -ge 18); detail = "$v" }
-} { Invoke-Winget 'OpenJS.NodeJS.LTS' } "winget install OpenJS.NodeJS.LTS"
+    $where = (Get-Command node -ErrorAction SilentlyContinue).Source
+    @{ ok = ([int]$Matches[1] -ge 18); detail = "$v  ($where)" }
+} { Install-Runtime 'OpenJS.NodeJS.LTS' 'Node' $nodeWorks } "winget install OpenJS.NodeJS.LTS, or pwsh engine\scripts\07-install-portable.ps1 -Node (no admin needed)"
 
 Check "winget available" {
     $null = & winget --version 2>&1
-    @{ ok = ($LASTEXITCODE -eq 0); detail = (& winget --version) }
-} $null "Update App Installer from the Microsoft Store"
+    # Only a convenience: without it the portable builds are used instead.
+    @{ ok = ($LASTEXITCODE -eq 0); warn = ($LASTEXITCODE -ne 0); detail = $(if ($LASTEXITCODE -eq 0) { (& winget --version) } else { 'not available - portable builds will be used' }) }
+} $null "Optional. Update App Installer from the Microsoft Store if you want winget."
 
 Check "PowerShell execution policy" {
-    $p = Get-ExecutionPolicy -Scope CurrentUser
-    @{ ok = ($p -in @('RemoteSigned','Unrestricted','Bypass')); detail = "$p" }
-} {
-    try {
-        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force -ErrorAction Stop
-        Write-Host "set to RemoteSigned" -ForegroundColor Green
-        $true
-    } catch { Write-Host "could not change it: $($_.Exception.Message)" -ForegroundColor Red; $false }
-} "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+    # This script is itself a .ps1 that is running, so scripts are not blocked outright.
+    # The launchers (Fish.AI.cmd, install.ps1) pass -ExecutionPolicy Bypass per process,
+    # which is all that is needed. Only warn when a Group Policy pins the policy, so the
+    # user knows why `.\start.ps1` typed by hand might be refused while the .cmd works.
+    $eff = Get-ExecutionPolicy
+    $pol = Get-ExecutionPolicy -List
+    $managed = ($pol | Where-Object { $_.Scope -in 'MachinePolicy','UserPolicy' -and $_.ExecutionPolicy -ne 'Undefined' })
+    if ($eff -in 'RemoteSigned','Unrestricted','Bypass') { return @{ ok = $true; detail = "$eff" } }
+    if ($managed) { return @{ ok = $false; warn = $true; detail = "$eff (set by Group Policy, cannot be changed here)" } }
+    @{ ok = $false; warn = $true; detail = "$eff" }
+} $null "Use Fish.AI.cmd / Setup.cmd (they bypass it per process), or: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
 
 Write-Host ""
 if ($script:Failed) {

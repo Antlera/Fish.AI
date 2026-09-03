@@ -9,6 +9,10 @@ engine/models-*/
 # ---- llama.cpp binaries and download cache ----
 engine/bin/
 engine/.tmp/
+
+# ---- Portable Python / Node unpacked by 07-install-portable.ps1 ----
+engine/python/
+engine/node/
 *.dll
 *.exe
 

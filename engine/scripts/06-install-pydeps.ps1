@@ -17,8 +17,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-            [Environment]::GetEnvironmentVariable('Path','User')
+. (Join-Path $PSScriptRoot '_env.ps1')   # PATH refresh + portable python first
 
 $core = @(
     'numpy'         # arrays, ddof-aware std
@@ -40,15 +39,19 @@ $optional = @(
 
 function Show-Missing {
     param([string[]]$Names)
+    # `import importlib` alone does not expose importlib.util on 3.12 (it only did on
+    # older versions because something else imported it first).
     $probe = @'
-import importlib, sys
+import importlib.util, sys
 missing = [m for m in sys.argv[1:] if importlib.util.find_spec(m) is None]
 print(",".join(missing))
 '@
     $tmp = Join-Path $env:TEMP 'fish-probe.py'
     $probe | Set-Content $tmp -Encoding UTF8
     $out = (& python $tmp @Names) -join ''
+    $code = $LASTEXITCODE
     Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    if ($code -ne 0) { throw "could not probe the Python environment (python exited with $code)" }
     if ($out) { return $out -split ',' } else { return @() }
 }
 

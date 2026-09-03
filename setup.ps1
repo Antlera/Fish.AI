@@ -16,6 +16,10 @@ param(
     # Preflight installs missing prerequisites (Python, Node) by default.
     # Pass this to have it only report them instead.
     [switch]$NoAutoInstall,
+    # Skip winget and unpack portable Python/Node inside engine\ instead. Preflight
+    # falls back to this by itself when winget fails; use it up front on a managed
+    # machine where you already know installs are blocked.
+    [switch]$Portable,
     # Do not create the desktop shortcut.
     [switch]$NoShortcut,
     # Snowflake is optional. Without it you still get local file analysis,
@@ -26,7 +30,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root    = $PSScriptRoot
 $Scripts = Join-Path $Root 'engine\scripts'
-$env:PYTHONUTF8 = '1'
 
 function Step([string]$n) {
     Write-Host ""
@@ -35,18 +38,16 @@ function Step([string]$n) {
     Write-Host ("=" * 64) -ForegroundColor DarkCyan
 }
 
-# PATH is not refreshed inside a running terminal after winget installs something.
-function Sync-Path {
-    $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-                [Environment]::GetEnvironmentVariable('Path','User')
-}
+# Refresh PATH (winget installs are not visible to a running terminal) and put the
+# portable runtimes in engine\ first if they exist.
+function Sync-Path { . (Join-Path $Scripts '_env.ps1') }
 Sync-Path
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 if (-not $SkipPreflight) {
     Step "1/5  Preflight"
-    & (Join-Path $Scripts '00-preflight.ps1') -AutoInstall:(-not $NoAutoInstall)
+    & (Join-Path $Scripts '00-preflight.ps1') -AutoInstall:(-not $NoAutoInstall) -Portable:$Portable
     if ($LASTEXITCODE -ne 0) {
         Write-Host "`nPreflight failed. Fix the items above, or re-run with -SkipPreflight to ignore." -ForegroundColor Red
         exit 1

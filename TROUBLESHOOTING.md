@@ -9,6 +9,33 @@ and `logs\web.log` (plus `.err` twins) in the repo root. The page's status banne
 
 ---
 
+## Preflight: winget "installs" Python/Node but they are still not found
+
+```
+Python 3.10+                      MISSING
+installing Python.Python.3.12 via winget ... winget exit -1978335138 - re-checking anyway
+  winget did not deliver a working install (blocked by policy?) - using the portable build
+```
+
+On managed (corporate) machines winget is often allowed to run but the install itself
+is blocked; it returns an error code and nothing appears. Preflight now falls back to
+the portable builds automatically - a complete Python (python-build-standalone) and the
+nodejs.org zip, unpacked into `engine\python` and `engine\node`, no admin rights, nothing
+registered with Windows. Every Fish.AI script puts those first on its own PATH.
+
+If you already know winget is blocked, skip the attempt: `.\setup.ps1 -Portable`, or run
+`engine\scripts\07-install-portable.ps1` directly. To go back to system-wide installs
+later, delete the two folders.
+
+## Preflight: "PowerShell execution policy ... could not change it: Security error"
+
+The policy is set by Group Policy and cannot be changed by the user. It does not matter:
+the scripts you are looking at are running, and `Fish.AI.cmd`, `Setup.cmd` and the
+one-line installer all start PowerShell with `-ExecutionPolicy Bypass`, which applies to
+that process only. Preflight reports this as a warning, not a failure. The only thing
+that will not work is typing `.\start.ps1` by hand in a plain PowerShell window - use
+`Fish.AI.cmd` or `powershell -ExecutionPolicy Bypass -File .\start.ps1` instead.
+
 ## The page says the engine is still starting, for minutes
 
 The browser opens before the model is loaded on purpose; 20–60 s of "推理引擎正在把模型读进显存"

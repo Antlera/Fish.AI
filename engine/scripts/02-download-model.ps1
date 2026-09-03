@@ -24,11 +24,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 
-# winget/npm installs do not refresh PATH inside an already-open terminal.
-# Pull the machine+user PATH in so a freshly installed tool is visible here.
-$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
-            [Environment]::GetEnvironmentVariable('Path','User')
-$env:PYTHONUTF8 = '1'
+. (Join-Path $PSScriptRoot '_env.ps1')   # PATH refresh + portable python first
 $env:HF_HUB_DISABLE_TELEMETRY = '1'
 
 # Keep this table in sync with $PROFILES in 03-start-server.ps1.
