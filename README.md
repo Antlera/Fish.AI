@@ -18,6 +18,12 @@ Runs entirely on your machine — no API keys, no cloud, your data never leaves 
 
 </div>
 
+**Install** — paste into PowerShell (no git needed, downloads over HTTPS):
+
+```powershell
+$env:FISH_NO_GIT='1'; irm https://raw.githubusercontent.com/Antlera/Fish.AI/main/install.ps1 | iex
+```
+
 ---
 
 ```
@@ -56,11 +62,11 @@ That is the whole design: **the model decides what to compute, Python does the c
 Open PowerShell and paste:
 
 ```powershell
-irm https://raw.githubusercontent.com/Antlera/Fish.AI/main/install.ps1 | iex
+$env:FISH_NO_GIT='1'; irm https://raw.githubusercontent.com/Antlera/Fish.AI/main/install.ps1 | iex
 ```
 
-That is the whole install. It fetches the code into `~\Fish.AI` (with git if you have
-it, otherwise as a plain zip download — no git required) and runs `setup.ps1`, which
+That is the whole install. It downloads the code as a zip over HTTPS into `~\Fish.AI`
+(drop the `$env:FISH_NO_GIT='1';` part to use git instead, if you have it) and runs `setup.ps1`, which
 installs **Python and Node.js via winget if they are missing**, then fetches llama.cpp,
 the model weights, the agent runtime and the Python data stack, and puts a **Fish.AI**
 shortcut on your desktop. Everything is re-runnable: the same line later updates an
